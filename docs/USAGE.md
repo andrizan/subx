@@ -1,3 +1,8 @@
+---
+layout: default
+title: subx manual
+---
+
 # subx — User Manual
 
 > Single binary for the full fansub pipeline: extract, clean, retime,
