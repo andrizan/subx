@@ -1,0 +1,20 @@
+# subx.toml — default config (all optional; CLI flags always win).
+workers = 8
+lang_priority = ["id"]
+default_font = "Arial"
+
+# Self-hosting recommended (docker: libretranslate/libretranslate --load-only en,id,ja).
+# Public instances need an api_key.
+libre_url = "http://localhost:5000"
+# libre_api_key = "fill-in-for-public-instance"
+
+# --- AI engine (OpenAI-compatible): OpenAI, OpenRouter, DeepSeek, Gemini,
+# local Ollama/LM Studio, opencode / other OpenAI-compatible services.
+# translate_engine = "libre"  # or "ai"
+# ai_base_url = "https://api.openai.com/v1"
+# ai_model = "gpt-4o-mini"
+#
+# An API key MAY go here via `ai_api_key`, but env is RECOMMENDED
+# ($env:OPENROUTER_API_KEY="sk-or-...") or the `subx.local.toml` file
+# (gitignored, never committed) so the key can't leak into git:
+#   ai_api_key = "sk-or-..."

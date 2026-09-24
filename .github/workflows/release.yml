@@ -1,0 +1,83 @@
+name: Release (Rust)
+
+# Release builds run ONLY on version tags (v*.*.*). Every push/PR is covered
+# by ci-rust.yml (fmt + clippy + test) instead — no binaries built there.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # required to create the GitHub Release
+
+jobs:
+  build:
+    name: Build (${{ matrix.pkg }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            src: target/release/subx.exe
+            pkg: subx-windows-amd64.exe
+          - os: ubuntu-latest
+            src: target/release/subx
+            pkg: subx-linux-amd64
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "${{ matrix.src }}" "dist/${{ matrix.pkg }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.pkg }}
+          path: dist/${{ matrix.pkg }}
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source (full history for git-cliff)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum * > checksums.txt
+          cat checksums.txt
+
+      - name: Changelog (git-cliff)
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/app" -w /app orhunp/git-cliff:latest --latest --strip all > RELEASE_NOTES.md
+          cat RELEASE_NOTES.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: RELEASE_NOTES.md
+          files: |
+            dist/subx-windows-amd64.exe
+            dist/subx-linux-amd64
+            dist/checksums.txt

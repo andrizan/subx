@@ -1,0 +1,7 @@
+# Copy this file to `subx.local.toml` (gitignored — safe place for API keys).
+# The `.local.toml` file overrides `subx.toml` when both exist.
+# NEVER commit `subx.local.toml` to git.
+translate_engine = "ai"
+ai_base_url = "https://openrouter.ai/api/v1"
+ai_model = "deepseek/deepseek-chat"
+ai_api_key = "sk-or-FILL-IN-HERE"
