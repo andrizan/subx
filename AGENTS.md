@@ -22,6 +22,7 @@ Project conventions for AI agents working in this repo. The global pi workflow
 
 ## Rust project
 
-- `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo test` must be
-  green after every change. Windows-first (PowerShell paths, sanitize filenames).
+- `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and
+  `cargo test` must be green after every change (tests are linted too).
+  Windows-first (PowerShell paths, sanitize filenames).
 - Keep each task scoped; no out-of-scope refactors.

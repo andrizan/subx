@@ -79,7 +79,6 @@ pub struct TranslateArgs {
 
 struct PipeOpts {
     pair: LangPair,
-    glossary_pairs: Vec<(String, String)>,
     glossary_re: Vec<(Regex, String)>,
     translate_karaoke: bool,
 }
@@ -186,7 +185,6 @@ pub async fn run(args: TranslateArgs) -> Result<()> {
     };
     let opts = PipeOpts {
         pair: pair.clone(),
-        glossary_pairs: glossary_pairs.clone(),
         glossary_re,
         translate_karaoke: args.translate_karaoke,
     };
@@ -358,7 +356,6 @@ mod tests {
                 to: "id".into(),
             },
             glossary_re: prompt::compile_glossary(&pairs).unwrap(),
-            glossary_pairs: pairs,
             translate_karaoke: false,
         }
     }

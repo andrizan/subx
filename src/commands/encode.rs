@@ -1,14 +1,16 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Args;
-use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::Value;
 use walkdir::WalkDir;
+
+use crate::common::config::AppConfig;
 
 /// `subx encode <SOURCE> <DEST>` — encode every video in a folder through a StaxRip template.
 ///
@@ -26,43 +28,48 @@ pub struct EncodeArgs {
     pub dest: PathBuf,
 
     /// StaxRip template (case and punctuation are ignored: "Anime480p.AV1.Opus96").
-    #[arg(long, default_value = "Anime-480p.AV1.Opus96")]
-    pub template: String,
+    /// Default: `[encode] template` in subx.toml.
+    #[arg(long)]
+    pub template: Option<String>,
 
-    /// Output name prefix (empty for none).
-    #[arg(long, default_value = "[ASUT]")]
-    pub prefix: String,
+    /// Output name prefix such as "[GROUP]"; "" for none. Default: `[encode] prefix`.
+    #[arg(long)]
+    pub prefix: Option<String>,
 
     /// Series name in the output file name (default: the source folder name).
     #[arg(long)]
     pub series: Option<String>,
 
-    /// Tag in parentheses at the end of the output file name.
-    #[arg(long, default_value = "BD 480p AV1.Opus")]
-    pub tag: String,
+    /// Tag in parentheses at the end of the output file name; "" for none.
+    /// Default: `[encode] tag`.
+    #[arg(long)]
+    pub tag: Option<String>,
 
-    /// Target size WIDTHxHEIGHT. The template derives the height from the aspect
-    /// ratio (848 -> 476), so it is locked here. Empty keeps the template's size.
-    #[arg(long, default_value = "848x480")]
-    pub resolution: String,
+    /// Target size WIDTHxHEIGHT, locked in StaxRip because templates derive the
+    /// height from the aspect ratio (848 -> 476). "" keeps the template's size.
+    /// Default: `[encode] resolution`.
+    #[arg(long)]
+    pub resolution: Option<String>,
 
     /// Only these episodes: comma-separated, ranges allowed ("10-13", "5,8-10,OVA 1-3").
     #[arg(long)]
     pub only: Option<String>,
 
     /// Subtitle language when the file name has no `.<lang>.` part.
-    #[arg(long, default_value = "id")]
-    pub sub_lang: String,
+    /// Default: `[encode] sub_lang` (id).
+    #[arg(long)]
+    pub sub_lang: Option<String>,
 
-    /// The only audio language kept (ISO 639-2, e.g. jpn).
-    #[arg(long, default_value = "jpn")]
-    pub audio_lang: String,
+    /// The only audio language kept (ISO 639-2). Default: `[encode] audio_lang` (jpn).
+    #[arg(long)]
+    pub audio_lang: Option<String>,
 
-    /// StaxRip folder (contains StaxRip.exe, Settings, Apps).
-    #[arg(long, default_value = r"D:\Apps\Fansub\StaxRip")]
-    pub staxrip_dir: PathBuf,
+    /// StaxRip folder (contains StaxRip.exe, Settings, Apps). Default: `[tools] staxrip_dir`.
+    #[arg(long)]
+    pub staxrip_dir: Option<PathBuf>,
 
-    /// Folder for the per-episode work copies (default: <temp>/subx-encode).
+    /// Folder for the per-episode work copies. Default: `[encode] work_dir`,
+    /// else <temp>/subx-encode.
     #[arg(long)]
     pub work_dir: Option<PathBuf>,
 
@@ -82,17 +89,19 @@ pub struct EncodeArgs {
 const VIDEO_EXTS: &[&str] = &["mkv", "mp4"];
 const SUB_EXTS: &[&str] = &["ass", "ssa", "srt"];
 
-static BRACKETS: Lazy<Regex> = Lazy::new(|| Regex::new(r"\[[^\]]*\]|\([^)]*\)").unwrap());
-static OVA: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bOVA\s*0*(\d+)\b").unwrap());
-static SEASON_EP: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bS\d+\s*E0*(\d{1,3})\b").unwrap());
-static DASH_EP: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s-\s*0*(\d{1,3})(?:v\d)?\b").unwrap());
-static EP: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bEP?\s*0*(\d{1,3})\b").unwrap());
-static NUMBER: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b0*(\d{1,3})\b").unwrap());
-static RANGE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)^(OVA\s*)?0*(\d+)\s*-\s*(?:OVA\s*)?0*(\d+)$").unwrap());
-static RESOLUTION: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\d+x\d+$").unwrap());
-static SUB_LANG: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)\.([a-z]{2,3})\.(?:ass|ssa|srt)$").unwrap());
+static BRACKETS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[[^\]]*\]|\([^)]*\)").unwrap());
+static OVA: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\bOVA\s*0*(\d+)\b").unwrap());
+static SEASON_EP: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\bS\d+\s*E0*(\d{1,3})\b").unwrap());
+static DASH_EP: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\s-\s*0*(\d{1,3})(?:v\d)?\b").unwrap());
+static EP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\bEP?\s*0*(\d{1,3})\b").unwrap());
+static NUMBER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b0*(\d{1,3})\b").unwrap());
+static RANGE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)^(OVA\s*)?0*(\d+)\s*-\s*(?:OVA\s*)?0*(\d+)$").unwrap());
+static RESOLUTION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d+x\d+$").unwrap());
+static SUB_LANG: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\.([a-z]{2,3})\.(?:ass|ssa|srt)$").unwrap());
 
 #[derive(Debug)]
 struct Episode {
@@ -142,15 +151,22 @@ fn episode_key(file_name: &str) -> Option<String> {
     Some(format!("{:02}", last[1].parse::<u32>().ok()?))
 }
 
-/// Comparable form of an episode key: "9" and "09" -> "09", "OVA 1" -> "OVA1".
+/// Comparable form of an episode key. Trailing digits are normalized, so "9"
+/// and "09" -> "09", while "OVA 1", "OVA 01" and "ova1" -> "OVA1".
 fn key_token(text: &str) -> String {
     let t = text.trim();
-    if !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()) {
-        return t
-            .parse::<u32>()
-            .map_or_else(|_| t.to_string(), |n| format!("{n:02}"));
+    let digits_at = t
+        .char_indices()
+        .rev()
+        .find(|(_, c)| !c.is_ascii_digit())
+        .map_or(0, |(i, c)| i + c.len_utf8());
+    let (prefix, digits) = t.split_at(digits_at);
+    let prefix: String = prefix.split_whitespace().collect::<String>().to_uppercase();
+    match digits.parse::<u32>() {
+        Ok(n) if prefix.is_empty() => format!("{n:02}"),
+        Ok(n) => format!("{prefix}{n}"),
+        Err(_) => prefix,
     }
-    t.split_whitespace().collect::<String>().to_uppercase()
 }
 
 /// "10,12-14,OVA 1-3" -> tokens comparable with `key_token(episode_key(..))`.
@@ -184,7 +200,11 @@ fn target_name(prefix: &str, series: &str, key: &str, tag: &str) -> String {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join(" ");
-    format!("{title} - {key} ({tag}).mkv")
+    if tag.is_empty() {
+        format!("{title} - {key}.mkv")
+    } else {
+        format!("{title} - {key} ({tag}).mkv")
+    }
 }
 
 /// Pair every video in `source` with the external subtitles of the same episode.
@@ -521,10 +541,42 @@ async fn encode_one(ctx: &Ctx, ep: &Episode, work_dir: &Path, cmdline: &str) -> 
     Ok(())
 }
 
-pub async fn run(args: EncodeArgs) -> Result<()> {
-    let exe = args.staxrip_dir.join("StaxRip.exe");
-    let mkvmerge = args
+pub async fn run(args: EncodeArgs, cfg: &AppConfig) -> Result<()> {
+    // Flags win over `[tools]` / `[encode]` in subx.toml; two values are required.
+    let staxrip_dir = args
         .staxrip_dir
+        .clone()
+        .or_else(|| cfg.tools.staxrip_dir.clone())
+        .context(
+            "StaxRip folder unknown: pass --staxrip-dir or set [tools] staxrip_dir in subx.toml",
+        )?;
+    let template_name = args
+        .template
+        .clone()
+        .or_else(|| cfg.encode.template.clone())
+        .context("template unknown: pass --template or set [encode] template in subx.toml")?;
+    let prefix = args
+        .prefix
+        .clone()
+        .unwrap_or_else(|| cfg.encode.prefix.clone());
+    let tag = args.tag.clone().unwrap_or_else(|| cfg.encode.tag.clone());
+    let audio_lang = args
+        .audio_lang
+        .clone()
+        .unwrap_or_else(|| cfg.encode.audio_lang.clone());
+    let sub_lang = args
+        .sub_lang
+        .clone()
+        .unwrap_or_else(|| cfg.encode.sub_lang.clone());
+    let resolution = args
+        .resolution
+        .clone()
+        .unwrap_or_else(|| cfg.encode.resolution.clone())
+        .trim()
+        .to_lowercase();
+
+    let exe = staxrip_dir.join("StaxRip.exe");
+    let mkvmerge = staxrip_dir
         .join("Apps")
         .join("Support")
         .join("MKVToolNix")
@@ -534,11 +586,10 @@ pub async fn run(args: EncodeArgs) -> Result<()> {
             anyhow::bail!("Not found: {}", p.display());
         }
     }
-    let resolution = args.resolution.trim().to_lowercase();
     if !resolution.is_empty() && !RESOLUTION.is_match(&resolution) {
         anyhow::bail!("--resolution must look like WIDTHxHEIGHT, e.g. 848x480");
     }
-    let template = resolve_template(&args.staxrip_dir, &args.template)?;
+    let template = resolve_template(&staxrip_dir, &template_name)?;
 
     if !args.dry_run && !args.allow_running {
         let running = staxrip_running().await;
@@ -561,14 +612,7 @@ pub async fn run(args: EncodeArgs) -> Result<()> {
         .map(expand_only)
         .transpose()?
         .unwrap_or_default();
-    let plan = build_plan(
-        &args.source,
-        &args.dest,
-        &args.prefix,
-        &series,
-        &args.tag,
-        &only,
-    )?;
+    let plan = build_plan(&args.source, &args.dest, &prefix, &series, &tag, &only)?;
 
     for ep in &plan {
         let status = if ep.target.exists() {
@@ -590,13 +634,14 @@ pub async fn run(args: EncodeArgs) -> Result<()> {
         mkvmerge,
         template,
         resolution,
-        audio_lang: args.audio_lang.clone(),
-        sub_lang: args.sub_lang.clone(),
+        audio_lang,
+        sub_lang,
         timeout: Duration::from_secs(args.timeout_min * 60),
     };
     let work_root = args
         .work_dir
         .clone()
+        .or_else(|| cfg.encode.work_dir.clone())
         .unwrap_or_else(|| std::env::temp_dir().join("subx-encode"));
 
     let (mut ok, mut skipped, mut failed) = (0, 0, 0);
@@ -698,7 +743,10 @@ mod tests {
         assert_eq!(key_token("9"), "09");
         assert_eq!(key_token("09"), "09");
         assert_eq!(key_token("OVA 1"), "OVA1");
+        assert_eq!(key_token("OVA 01"), "OVA1");
         assert_eq!(key_token(" ova1 "), "OVA1");
+        assert_eq!(key_token("Movie"), "MOVIE");
+        assert_eq!(key_token(""), "");
     }
 
     #[test]
@@ -723,6 +771,7 @@ mod tests {
             target_name("", "Show", "OVA 1", "T"),
             "Show - OVA 1 (T).mkv"
         );
+        assert_eq!(target_name("", "Show", "01", ""), "Show - 01.mkv");
     }
 
     #[test]

@@ -176,13 +176,17 @@ Reports per file: event count, min/max durations, average/max reading speed
 
 ```
 subx encode <SOURCE> <DEST> [--template NAME] [--only 10-13] [--resolution 848x480]
-              [--prefix "[ASUT]"] [--series S] [--tag "BD 480p AV1.Opus"]
+              [--prefix "[GROUP]"] [--series S] [--tag "BD 480p AV1.Opus"]
               [--sub-lang id] [--audio-lang jpn] [--staxrip-dir DIR]
               [--work-dir DIR] [--timeout-min 120] [--dry-run] [--allow-running]
 ```
 
-Windows only; needs StaxRip (its bundled MKVToolNix is used too). For every video
-in `<SOURCE>`:
+Windows only; needs StaxRip (its bundled MKVToolNix is used too). Every option
+except `--only`, `--series`, `--timeout-min` and the switches defaults to the
+`[encode]` section of `subx.toml` / `subx.local.toml` (`--staxrip-dir` to
+`[tools] staxrip_dir`), so a configured machine runs with just
+`subx encode <SOURCE> <DEST>`. The template and the StaxRip folder must be
+given one way or the other. For every video in `<SOURCE>`:
 
 1. Makes a work copy with mkvmerge: no embedded subtitles or fonts, only the
    `--audio-lang` track (video, chapters and timing untouched).
@@ -209,8 +213,10 @@ in `<SOURCE>`:
 
 ## Configuration
 
-Optional `subx.toml` (next to the binary, or `--config`); CLI flags always win.
-`subx.local.toml` (gitignored) overrides it — put secrets there.
+Optional `subx.toml` (next to the binary and in the current directory, or one
+file via `--config`); CLI flags always win. `subx.local.toml` (gitignored) is
+merged over it — keys there win, everything else keeps the `subx.toml` value —
+so secrets and machine paths belong there.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -223,6 +229,12 @@ Optional `subx.toml` (next to the binary, or `--config`); CLI flags always win.
 | `ai_base_url` | `"https://api.openai.com/v1"` | OpenAI-compatible endpoint |
 | `ai_model` | `"gpt-4o-mini"` | default AI model |
 | `ai_api_key` | — | AI key (prefer env, see below) |
+| `[tools] staxrip_dir` | — | folder with `StaxRip.exe` (required by `encode`) |
+| `[encode] template` | — | StaxRip template name (required by `encode`) |
+| `[encode] prefix` / `tag` | `""` | output name prefix and parenthesized tag |
+| `[encode] resolution` | `""` | `WIDTHxHEIGHT` locked in StaxRip; empty keeps the template's size |
+| `[encode] audio_lang` / `sub_lang` | `"jpn"` / `"id"` | audio track kept; subtitle language fallback |
+| `[encode] work_dir` | temp | folder for per-episode work copies |
 
 ## Translate engines in depth
 
@@ -266,7 +278,7 @@ token estimates first.
 | `AI provider rejected the key (401)` | wrong/expired key (masked in the message, never printed) |
 | `AI returned N lines, expected M` | model broke numbering — retry, or lower `--batch` |
 | `yt-dlp not found` | `winget install yt-dlp` |
-| `encode`: `Not found: ...StaxRip.exe` | pass `--staxrip-dir` (default `D:\Apps\Fansub\StaxRip`) |
+| `encode`: `StaxRip folder unknown` / `Not found: ...StaxRip.exe` | set `[tools] staxrip_dir` in `subx.local.toml` or pass `--staxrip-dir` |
 | `encode`: `StaxRip is still running` | finish/close StaxRip first, or `--allow-running` |
 | `encode`: `Output does not match: resolution=...` | the template's size won; check `--resolution` and the StaxRip log in `Settings\Log Files` |
 | `clean` skipped `subs/en/` | add `-r` to recurse into language subfolders |

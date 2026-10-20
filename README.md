@@ -4,7 +4,7 @@ All-in-one fansub toolkit in a single Rust binary: extract subtitles/audio from
 video, clean and retime them, translate via LibreTranslate or any
 OpenAI-compatible AI model, QC the result, and mux it back.
 
-Status: **complete** — 72 unit + 5 end-to-end tests, `clippy -D warnings` clean.
+Status: **complete** — 73 unit + 5 end-to-end tests, `clippy --all-targets -D warnings` clean.
 
 ## Requirements
 

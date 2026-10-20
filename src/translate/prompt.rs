@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
-use once_cell::sync::Lazy;
 use regex::{Regex, RegexBuilder};
+use std::sync::LazyLock;
 
-static NUM_PREFIX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\s*\d+\s*[.)]\s?").unwrap());
+static NUM_PREFIX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*\d+\s*[.)]\s?").unwrap());
 
 /// Build the system prompt for subtitle translation, injecting glossary rules.
 pub fn system_prompt(from: &str, to: &str, glossary: &[(String, String)]) -> String {

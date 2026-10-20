@@ -1,8 +1,8 @@
-use once_cell::sync::Lazy;
 use regex::Regex;
+use std::sync::LazyLock;
 
-static TAG: Lazy<Regex> = Lazy::new(|| Regex::new(r"\{[^}]*\}|\\[Nnh]").unwrap());
-static RESTORE: Lazy<Regex> = Lazy::new(|| Regex::new(r"⟦(\d+)⟧").unwrap());
+static TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{[^}]*\}|\\[Nnh]").unwrap());
+static RESTORE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"⟦(\d+)⟧").unwrap());
 
 /// Protect formatting (`{...}` override blocks, `\N` / `\h` breaks) as
 /// `⟦n⟧` placeholders so MT engines neither translate nor mangle them.

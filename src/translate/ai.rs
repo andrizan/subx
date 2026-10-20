@@ -289,12 +289,11 @@ mod tests {
                         .unwrap_or_default();
                     for line in user.lines() {
                         let t = line.trim();
-                        if let Some((num, rest)) = t.split_once(['.', ')']) {
-                            if !num.trim().is_empty()
-                                && num.trim().bytes().all(|b| b.is_ascii_digit())
-                            {
-                                out.push(format!("{}. TR:{}", num.trim(), rest.trim()));
-                            }
+                        if let Some((num, rest)) = t.split_once(['.', ')'])
+                            && !num.trim().is_empty()
+                            && num.trim().bytes().all(|b| b.is_ascii_digit())
+                        {
+                            out.push(format!("{}. TR:{}", num.trim(), rest.trim()));
                         }
                     }
                 }

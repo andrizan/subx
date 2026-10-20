@@ -1,12 +1,12 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use once_cell::sync::Lazy;
 use regex::Regex;
+use std::sync::LazyLock;
 
 use super::{SubFile, SubFormat};
 
-static VTT_TAG: Lazy<Regex> = Lazy::new(|| Regex::new(r"<[^>\n]*>").unwrap());
+static VTT_TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>\n]*>").unwrap());
 
 pub struct ConvertSummary {
     pub events: usize,

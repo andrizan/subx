@@ -35,7 +35,7 @@ test-e2e:
 	$(CARGO) test -- --ignored
 
 lint:
-	$(CARGO) clippy -- -D warnings
+	$(CARGO) clippy --all-targets -- -D warnings
 
 fmt:
 	$(CARGO) fmt

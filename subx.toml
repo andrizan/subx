@@ -18,3 +18,15 @@ libre_url = "http://localhost:5000"
 # ($env:OPENROUTER_API_KEY="sk-or-...") or the `subx.local.toml` file
 # (gitignored, never committed) so the key can't leak into git:
 #   ai_api_key = "sk-or-..."
+
+# --- encode: StaxRip-driven batch encode (docs/USAGE.md#encode). Machine-specific
+# values belong in subx.local.toml; every CLI flag wins over these.
+# [tools]
+# staxrip_dir = "D:/Apps/StaxRip"       # folder with StaxRip.exe (required)
+# [encode]
+# template = "Anime-480p.AV1.Opus96"     # StaxRip template (required)
+# prefix = "[GROUP]"                     # output name prefix, "" for none
+# tag = "BD 480p AV1.Opus"               # tag in parentheses, "" for none
+# resolution = "848x480"                 # "" keeps the template's size
+# audio_lang = "jpn"
+# sub_lang = "id"

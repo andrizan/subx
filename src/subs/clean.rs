@@ -1,17 +1,20 @@
-use once_cell::sync::Lazy;
 use regex::Regex;
+use std::sync::LazyLock;
 
 use super::{Event, shift::shift_events};
 
-static KARAOKE_TAG: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\\k[0-9]|\\K[0-9]|\\kf[0-9]|\\ko[0-9]").unwrap());
-static OVERRIDE_BLOCK: Lazy<Regex> = Lazy::new(|| Regex::new(r"\{[^}]*\}").unwrap());
-static DRAWING: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^\s*[mlbc]\s+[-0-9.]").unwrap());
-static DOMAIN_JUNK: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"[A-Za-z0-9_]+\.[a-zA-Z]{2,}$").unwrap());
-static DEATH_JUNK: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)deaths?").unwrap());
-static SYNC_TITLE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)sync.*title|sign.*title").unwrap());
-static SYMBOLS_ONLY: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[^a-zA-Z0-9\s]{3,}$").unwrap());
+static KARAOKE_TAG: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\\k[0-9]|\\K[0-9]|\\kf[0-9]|\\ko[0-9]").unwrap());
+static OVERRIDE_BLOCK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{[^}]*\}").unwrap());
+static DRAWING: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)^\s*[mlbc]\s+[-0-9.]").unwrap());
+static DOMAIN_JUNK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[A-Za-z0-9_]+\.[a-zA-Z]{2,}$").unwrap());
+static DEATH_JUNK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)deaths?").unwrap());
+static SYNC_TITLE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)sync.*title|sign.*title").unwrap());
+static SYMBOLS_ONLY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[^a-zA-Z0-9\s]{3,}$").unwrap());
 
 /// True for vertical karaoke: karaoke timing tags, or many tiny lines.
 pub fn is_karaoke_vertical(text: &str) -> bool {

@@ -13,9 +13,11 @@ pub mod translate;
 use anyhow::Result;
 
 use crate::cli::{Cli, Commands};
+use crate::common::config::AppConfig;
 
-/// Dispatch the root CLI to each command handler (Phase 0 stub).
-pub async fn dispatch(cli: Cli) -> Result<()> {
+/// Dispatch the root CLI to each command handler. `cfg` supplies defaults for
+/// commands whose flags are optional; every flag wins over it.
+pub async fn dispatch(cli: Cli, cfg: AppConfig) -> Result<()> {
     match cli.command {
         Commands::Extract(a) => extract::run(a).await,
         Commands::Clean(a) => clean::run(a).await,
@@ -27,6 +29,6 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Commands::Probe(a) => probe::run(a).await,
         Commands::Fetch(a) => fetch::run(a).await,
         Commands::Stats(a) => stats::run(a).await,
-        Commands::Encode(a) => encode::run(a).await,
+        Commands::Encode(a) => encode::run(a, &cfg).await,
     }
 }
