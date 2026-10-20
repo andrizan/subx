@@ -28,7 +28,7 @@ toml_edit = "0.22"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 walkdir = "2.5"
-which = "6.0"
+which = "8.0"
 zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
