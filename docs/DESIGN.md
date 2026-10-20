@@ -5,9 +5,10 @@ Status: phases 0 (CI and releases), 1 (quick wins), 2 (tools module),
 and x265, Opus and the AAC chain, `-j`, stall watchdog, per-episode logs; the
 AV1+Opus reference episode reproduces StaxRip's output bit for bit), 5
 (`extract --fonts/--chapters`, the `fonts` command, `source = "vapoursynth"`,
-`crop = "auto"`, xHE-AAC via exhale) and 6 (parity test, `native` is the
-default engine, StaxRip stays available as `--engine staxrip`) are
-implemented; only the optional phase 7 is open. The current `encode` command drives StaxRip through its
+`crop = "auto"`, xHE-AAC via exhale), 6 (parity test, `native` is the
+default engine, StaxRip stays available as `--engine staxrip`) and 7
+(`subx tui`, a ratatui front end for profiles, tools and encodes) are all
+implemented. The current `encode` command drives StaxRip through its
 command line; this document describes the target architecture that removes
 that dependency while keeping the output equivalent, and the roadmap to get
 there. `AGENTS.md` conventions apply throughout.
@@ -48,8 +49,12 @@ Goals
 
 Non-goals (for now)
 
-- GUI (egui/eframe). Settings fit in TOML profiles plus flags; a GUI would be a
-  separate workspace crate later, never inside the CLI binary.
+- GUI (egui/eframe). Settings fit in TOML profiles plus flags, and the
+  interactive part is covered by `subx tui` (ratatui, phase 7), which stays
+  a thin layer over the CLI: it edits `subx.local.toml` with `toml_edit` and
+  runs `subx encode` / `subx tools install` as child processes with a live
+  log, so no engine code knows about the UI. A GUI would be a separate
+  workspace crate later, never inside the CLI binary.
 - Parsing StaxRip `.srip` templates (.NET BinaryFormatter). Profiles are
   transcribed once from StaxRip's logged command lines.
 - In-process encoding through `libsvtav1` FFI. A pipe between two processes
@@ -137,7 +142,7 @@ x265, qaac, opusenc, yt-dlp; VapourSynth stays link-only): download into
 `tools/<name>/` while hashing, verify the publisher's checksum when one exists
 (BtbN `checksums.sha256`, MKVToolNix `.sha256`, yt-dlp `SHA2-256SUMS`;
 otherwise print the SHA-256 that was downloaded and warn, since the Patman and
-qaac releases publish none), extract `.zip` (`zip` crate), `.7z` (`sevenz-rust`)
+qaac releases publish none), extract `.zip` (`zip` crate), `.7z` (`sevenz-rust2`)
 or `.tar.xz` (system `tar`, present on every Linux/macOS), then re-run the
 version probe. Versions are pinned in `tools.rs` (ffmpeg release branch 9.0,
 MKVToolNix 103.0, yt-dlp 2026.08.19, the Patman tags). A `--latest` mode
@@ -416,7 +421,8 @@ StaxRip's AutoCrop.
 
 Remove: `chardetng`, `encoding_rs`, `console`, `rayon`, `similar`, `thiserror`
 (unused), `once_cell` (use `std::sync::LazyLock`). Add: `zip` (deflate only),
-`sevenz-rust`, `sha2`; `.tar.xz` goes through the system `tar`, so no C
+`sevenz-rust2` (the maintained fork; `sevenz-rust` 0.6 carries RUSTSEC-2026-0245),
+`sha2`, and for the TUI `ratatui` + `toml_edit`; `.tar.xz` goes through the system `tar`, so no C
 dependency is linked. Trim: `reqwest` with `default-features = false` (one TLS stack),
 `tokio` to `rt-multi-thread, macros, process, fs, io-util, time, sync`.
 `Cargo.toml`: `rust-version`, release profile `lto = "fat"`, `codegen-units = 1`,
@@ -437,7 +443,7 @@ folder the user provides.
 | 4 Native encode | `--engine native` (default stays `staxrip` until phase 6), profiles, ffmpeg source, SVT-AV1 **and** x265, Opus **and** the AAC family (`aac_encoders` fallback chain, `qaac` install + Apple DLL check), mkvmerge, verify, `-j`, stall watchdog, per-episode log | one AV1+Opus and one HEVC+HE-AAC episode encode end to end and pass verify; a profile whose AAC encoder is missing fails at plan time with the install hint; `--dry-run` prints every command line |
 | 5 Fonts, chapters, VapourSynth, crop | `extract` fonts/chapters, `fonts` command, `source = "vapoursynth"`, `crop = "auto"`, `xhe-aac` via exhale | VS backend runs a resize-only script with identical SSIM to the ffmpeg backend; `cropdetect` result matches StaxRip's AutoCrop on the reference episode |
 | 6 Parity and switch | parity test, `--engine native` default, StaxRip engine kept as `--engine staxrip`, docs | SSIM ≥ 0.99 on the reference episode (measured: identical MD5); `docs/USAGE.md` and `README.md` updated |
-| 7 Optional | TUI progress (`ratatui`) or separate `subx-gui` crate | only if asked |
+| 7 TUI | `subx tui` (ratatui): profile editor writing `[encode.profiles.*]` into the local config via `toml_edit`, tools table with install, encode launcher with live log; `src/tui/` | profiles saved from the TUI load unchanged through `AppConfig`; comments in the local file survive; every tab renders under `TestBackend`; key handling unit-tested |
 
 ## Open questions
 

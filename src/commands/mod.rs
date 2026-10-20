@@ -11,6 +11,7 @@ pub mod shift;
 pub mod stats;
 pub mod tools;
 pub mod translate;
+pub mod tui;
 
 use anyhow::Result;
 
@@ -20,6 +21,7 @@ use crate::common::config::AppConfig;
 /// Dispatch the root CLI to each command handler. `cfg` supplies defaults for
 /// commands whose flags are optional; every flag wins over it.
 pub async fn dispatch(cli: Cli, cfg: AppConfig) -> Result<()> {
+    let config_arg = cli.config.clone();
     match cli.command {
         Commands::Extract(a) => extract::run(a).await,
         Commands::Clean(a) => clean::run(a).await,
@@ -34,5 +36,6 @@ pub async fn dispatch(cli: Cli, cfg: AppConfig) -> Result<()> {
         Commands::Encode(a) => encode::run(a, &cfg).await,
         Commands::Tools(a) => tools::run(a, &cfg).await,
         Commands::Fonts(a) => fonts::run(a).await,
+        Commands::Tui(a) => tui::run(a, cfg, config_arg).await,
     }
 }

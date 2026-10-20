@@ -4,6 +4,7 @@ mod common;
 mod media;
 mod subs;
 mod translate;
+mod tui;
 
 use anyhow::Result;
 use clap::Parser;

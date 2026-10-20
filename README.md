@@ -4,7 +4,7 @@ All-in-one fansub toolkit in a single Rust binary: extract subtitles/audio from
 video, clean and retime them, translate via LibreTranslate or any
 OpenAI-compatible AI model, QC the result, and mux it back.
 
-Status: **complete** — 102 unit + 9 end-to-end tests, `clippy --all-targets -D warnings` clean.
+Status: **complete** — 112 unit + 9 end-to-end tests, `clippy --all-targets -D warnings` clean.
 
 ## Requirements
 
@@ -45,6 +45,7 @@ Shortcuts: `make build-release`, `make check`, `make run ARGS="..."`.
 | `stats` | QC report: reading speed (CPS), durations, overlaps |
 | `encode` | Batch-encode a folder from a TOML profile (ffmpeg → SVT-AV1/x265, Opus/AAC, mkvmerge): one audio language, no embedded subs/fonts, matching external subs added; `--engine staxrip` drives a StaxRip template instead |
 | `tools` | Check, locate or install the external binaries (ffmpeg, MKVToolNix, SVT-AV1, x265, qaac, yt-dlp, ...) |
+| `tui` | Terminal UI (ratatui): edit encode profiles in `subx.local.toml`, check/install tools, run encodes with a live log |
 
 ```powershell
 subx --help
@@ -53,6 +54,7 @@ subx clean subs out -r --shift-ms -1500
 subx translate out out-id --engine ai --from en --to id
 subx stats out-id --cps 20
 subx mux --video Ep01.mkv --subs out\Ep01.id.ass -o Ep01_FANSUB.mkv
+subx tui                                                 # profiles, tools, encodes
 ```
 
 Full manual: [`docs/USAGE.md`](docs/USAGE.md).

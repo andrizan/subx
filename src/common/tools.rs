@@ -607,7 +607,7 @@ pub fn extract(archive: &Path, kind: Archive, dest: &Path, exe: &str) -> Result<
                 .with_context(|| "zip extraction failed")?;
         }
         Archive::SevenZ => {
-            sevenz_rust::decompress_file(archive, dest)
+            sevenz_rust2::decompress_file(archive, dest)
                 .map_err(|e| anyhow::anyhow!("7z extraction failed: {e}"))?;
         }
         Archive::TarXz => {

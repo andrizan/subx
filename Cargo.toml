@@ -15,14 +15,16 @@ anyhow = "1.0"
 clap = { version = "4.5", features = ["derive", "suggestions"] }
 futures = "0.3"
 indicatif = "0.18"
+ratatui = "0.30"
 regex = "1.10"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "charset", "http2"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-sevenz-rust = "0.6"
+sevenz-rust2 = { version = "0.24", default-features = false, features = ["util"] }
 sha2 = "0.11"
 tokio ={ version = "1.40", features = ["rt-multi-thread", "macros", "process", "time", "sync", "net", "io-util"] }
 toml = "0.8"
+toml_edit = "0.22"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 walkdir = "2.5"

@@ -12,7 +12,7 @@ title: subx manual
 - [Install](#install)
 - [Typical workflows](#typical-workflows)
 - [Command reference](#command-reference)
-- [Configuration](#configuration)
+- [Configuration](#configuration) (profiles can also be edited in `subx tui`)
 - [Translate engines in depth](#translate-engines-in-depth)
 - [Troubleshooting](#troubleshooting)
 
@@ -294,6 +294,36 @@ success the log moves to `<work_dir>/logs/<episode>.log` and the intermediates
 are deleted, on failure everything stays. An encoder whose output stops
 growing for `--stall-min` minutes is killed. `--dry-run` prints the probed
 facts and every command line.
+
+### `tui` — profiles, tools and encodes in a terminal UI
+
+```
+subx tui [--write-to FILE]
+```
+
+A ratatui front end for the parts that are tedious on a command line. Three
+tabs (`Tab`/`Shift+Tab` or `1`/`2`/`3`), `q` quits, `Ctrl+C` always quits:
+
+- **Profiles** — every `[encode.profiles.*]` entry, the default marked `*`.
+  `Enter` opens the editor: `↑/↓` pick a field, `Enter` types into text fields
+  (`Enter` again confirms, `Esc` cancels), `←/→` cycle choices (encoder, audio
+  codec, color, source), `s` saves, `S` saves and makes it the default, `Esc`
+  closes. `n` starts a new profile, `d` (then `y`) deletes, `*` sets the
+  default. Saves go to `--write-to`, else `--config` when given, else the
+  existing `subx.local.toml` in the current folder or next to `subx`, else a
+  new `subx.local.toml` here — only the profile table changes, comments and
+  other keys stay as they were.
+- **Encode** — pick profile and engine, type source/output folders, an
+  optional `--only` selection and `-j`; `dry run` is on by default so the
+  first `r` shows the plan and command lines. `r` runs `subx encode` as a
+  child process with its output streaming into the log pane (`PgUp`/`PgDn`
+  scroll, `End` follows), `c` cancels.
+- **Tools** — the `tools check` table; `i` installs the selected tool
+  (`subx tools install <name>` in the log pane), `R` re-probes.
+
+Everything the TUI does is exactly what the CLI does — it only builds the
+command lines and edits the TOML — so a profile written here works with
+`subx encode --profile <name>` unchanged.
 
 ### `tools` — external binaries
 

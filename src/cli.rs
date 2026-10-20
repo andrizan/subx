@@ -50,4 +50,6 @@ pub enum Commands {
     Tools(crate::commands::tools::ToolsArgs),
     /// List the fonts ASS scripts need and whether they are attached, installed or missing.
     Fonts(crate::commands::fonts::FontsArgs),
+    /// Terminal UI: edit encode profiles, check tools, run encodes with a live log.
+    Tui(crate::commands::tui::TuiArgs),
 }

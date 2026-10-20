@@ -19,6 +19,7 @@ allow = [
     "MIT",
     "Unicode-3.0",
     "Unlicense",
+    "Zlib", # foldhash (ratatui), zlib-rs
 ]
 confidence-threshold = 0.8
 
