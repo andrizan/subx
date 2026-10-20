@@ -12,6 +12,9 @@ use walkdir::WalkDir;
 
 use crate::common::config::AppConfig;
 use crate::common::episode::{self, EpisodeId};
+use crate::common::tools::{self, Tool};
+
+mod native;
 
 /// `subx encode <SOURCE> <DEST>` — encode every video in a folder through a StaxRip template.
 ///
@@ -74,6 +77,24 @@ pub struct EncodeArgs {
     #[arg(long)]
     pub work_dir: Option<PathBuf>,
 
+    /// `staxrip` (drive StaxRip) or `native` (ffmpeg + encoder + mkvmerge).
+    /// Default: `[encode] engine` (staxrip).
+    #[arg(long)]
+    pub engine: Option<String>,
+
+    /// Native engine: `[encode.profiles.*]` entry to use. Default: `[encode] profile`.
+    #[arg(long)]
+    pub profile: Option<String>,
+
+    /// Native engine: episodes encoded concurrently. Default: `[encode] jobs` (1).
+    #[arg(short = 'j', long)]
+    pub jobs: Option<usize>,
+
+    /// Native engine: kill an episode whose encoder output stops growing for
+    /// this many minutes. Default: `[encode] stall_min` (5).
+    #[arg(long)]
+    pub stall_min: Option<u64>,
+
     /// Stop StaxRip when one episode takes longer than this many minutes.
     #[arg(long, default_value_t = 120)]
     pub timeout_min: u64,
@@ -95,11 +116,11 @@ static SUB_LANG: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\.([a-z]{2,3})\.(?:ass|ssa|srt)$").unwrap());
 
 #[derive(Debug)]
-struct Episode {
-    id: EpisodeId,
-    video: PathBuf,
-    subs: Vec<PathBuf>,
-    target: PathBuf,
+pub(crate) struct Episode {
+    pub(crate) id: EpisodeId,
+    pub(crate) video: PathBuf,
+    pub(crate) subs: Vec<PathBuf>,
+    pub(crate) target: PathBuf,
 }
 
 /// Settings shared by every episode of one run.
@@ -119,7 +140,7 @@ fn has_ext(path: &Path, exts: &[&str]) -> bool {
         .is_some_and(|e| exts.iter().any(|x| e.eq_ignore_ascii_case(x)))
 }
 
-fn file_name(path: &Path) -> Option<&str> {
+pub(crate) fn file_name(path: &Path) -> Option<&str> {
     path.file_name().and_then(|n| n.to_str())
 }
 
@@ -230,7 +251,7 @@ fn resolve_template(staxrip_dir: &Path, name: &str) -> Result<String> {
 }
 
 /// Subtitle language from `<name>.<lang>.<ext>`, else the default.
-fn sub_language(path: &Path, default: &str) -> String {
+pub(crate) fn sub_language(path: &Path, default: &str) -> String {
     file_name(path)
         .and_then(|n| SUB_LANG.captures(n))
         .map_or_else(|| default.to_string(), |c| c[1].to_string())
@@ -277,7 +298,7 @@ fn staxrip_cmdline(
     parts.join(" ")
 }
 
-async fn mkv_info(mkvmerge: &Path, file: &Path) -> Result<Value> {
+pub(crate) async fn mkv_info(mkvmerge: &Path, file: &Path) -> Result<Value> {
     let out = tokio::process::Command::new(mkvmerge)
         .arg("-J")
         .arg(file)
@@ -295,7 +316,7 @@ fn track_matches_lang(track: &Value, lang: &str) -> bool {
 }
 
 /// Track id of the first audio track in `lang`.
-fn pick_audio_track(info: &Value, lang: &str) -> Result<u64> {
+pub(crate) fn pick_audio_track(info: &Value, lang: &str) -> Result<u64> {
     let tracks = info["tracks"].as_array().map_or(&[][..], Vec::as_slice);
     let hits: Vec<&Value> = tracks
         .iter()
@@ -343,7 +364,7 @@ async fn make_clean_copy(
 }
 
 /// What is wrong with a finished file (empty when it matches expectations).
-fn check_output(
+pub(crate) fn check_output(
     info: &Value,
     expected_subs: usize,
     audio_lang: &str,
@@ -471,8 +492,100 @@ async fn encode_one(ctx: &Ctx, ep: &Episode, work_dir: &Path, cmdline: &str) -> 
     Ok(())
 }
 
+fn print_plan(plan: &[Episode]) {
+    for ep in plan {
+        let status = if ep.target.exists() {
+            "SKIP (output exists)"
+        } else {
+            "ENCODE"
+        };
+        println!(
+            "{:<7} {:<22} subs={} -> {}",
+            ep.id.to_string(),
+            status,
+            ep.subs.len(),
+            file_name(&ep.target).unwrap_or_default()
+        );
+    }
+}
+
 pub async fn run(args: EncodeArgs, cfg: &AppConfig) -> Result<()> {
-    // Flags win over `[tools]` / `[encode]` in subx.toml; two values are required.
+    // Flags win over `[tools]` / `[encode]` in subx.toml.
+    if !args.source.exists() {
+        anyhow::bail!("Not found: {}", args.source.display());
+    }
+    let engine = args
+        .engine
+        .clone()
+        .unwrap_or_else(|| cfg.encode.engine.clone());
+    let prefix = args
+        .prefix
+        .clone()
+        .unwrap_or_else(|| cfg.encode.prefix.clone());
+    let audio_lang = args
+        .audio_lang
+        .clone()
+        .unwrap_or_else(|| cfg.encode.audio_lang.clone());
+    let sub_lang = args
+        .sub_lang
+        .clone()
+        .unwrap_or_else(|| cfg.encode.sub_lang.clone());
+    let series = args.series.clone().unwrap_or_else(|| {
+        args.source
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    });
+    let only = args
+        .only
+        .as_deref()
+        .map(episode::expand_selection)
+        .transpose()?
+        .unwrap_or_default();
+    let work_root = args
+        .work_dir
+        .clone()
+        .or_else(|| cfg.encode.work_dir.clone())
+        .unwrap_or_else(|| std::env::temp_dir().join("subx-encode"));
+
+    match engine.as_str() {
+        "native" => {
+            let profile_name = args
+                .profile
+                .clone()
+                .or_else(|| cfg.encode.profile.clone())
+                .context("profile unknown: pass --profile or set [encode] profile in subx.toml")?;
+            let stall_min = args.stall_min.unwrap_or(cfg.encode.stall_min);
+            let native = native::Native::setup(
+                &cfg.encode,
+                &profile_name,
+                &audio_lang,
+                &sub_lang,
+                stall_min,
+            )
+            .await?;
+            let tag = args
+                .tag
+                .clone()
+                .or_else(|| native.profile.tag.clone())
+                .unwrap_or_else(|| cfg.encode.tag.clone());
+            let plan = build_plan(&args.source, &args.dest, &prefix, &series, &tag, &only)?;
+            print_plan(&plan);
+            if args.dry_run {
+                return native::dry_run(&native, &plan, &work_root).await;
+            }
+            let jobs = args.jobs.unwrap_or(cfg.encode.jobs).max(1);
+            let failed = native::run_all(&native, &plan, &work_root, jobs).await?;
+            if failed > 0 {
+                anyhow::bail!("{failed} episode(s) failed.");
+            }
+            return Ok(());
+        }
+        "staxrip" => {}
+        other => anyhow::bail!("unknown engine '{other}' (staxrip | native)"),
+    }
+
+    // --- StaxRip engine --------------------------------------------------------
     let staxrip_dir = args
         .staxrip_dir
         .clone()
@@ -485,19 +598,7 @@ pub async fn run(args: EncodeArgs, cfg: &AppConfig) -> Result<()> {
         .clone()
         .or_else(|| cfg.encode.template.clone())
         .context("template unknown: pass --template or set [encode] template in subx.toml")?;
-    let prefix = args
-        .prefix
-        .clone()
-        .unwrap_or_else(|| cfg.encode.prefix.clone());
     let tag = args.tag.clone().unwrap_or_else(|| cfg.encode.tag.clone());
-    let audio_lang = args
-        .audio_lang
-        .clone()
-        .unwrap_or_else(|| cfg.encode.audio_lang.clone());
-    let sub_lang = args
-        .sub_lang
-        .clone()
-        .unwrap_or_else(|| cfg.encode.sub_lang.clone());
     let resolution = args
         .resolution
         .clone()
@@ -506,16 +607,10 @@ pub async fn run(args: EncodeArgs, cfg: &AppConfig) -> Result<()> {
         .to_lowercase();
 
     let exe = staxrip_dir.join("StaxRip.exe");
-    let mkvmerge = staxrip_dir
-        .join("Apps")
-        .join("Support")
-        .join("MKVToolNix")
-        .join("mkvmerge.exe");
-    for p in [&exe, &mkvmerge, &args.source] {
-        if !p.exists() {
-            anyhow::bail!("Not found: {}", p.display());
-        }
+    if !exe.exists() {
+        anyhow::bail!("Not found: {}", exe.display());
     }
+    let mkvmerge = tools::require_one(Tool::Mkvmerge)?;
     if !resolution.is_empty() && !RESOLUTION.is_match(&resolution) {
         anyhow::bail!("--resolution must look like WIDTHxHEIGHT, e.g. 848x480");
     }
@@ -530,34 +625,8 @@ pub async fn run(args: EncodeArgs, cfg: &AppConfig) -> Result<()> {
         }
     }
 
-    let series = args.series.clone().unwrap_or_else(|| {
-        args.source
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default()
-    });
-    let only = args
-        .only
-        .as_deref()
-        .map(episode::expand_selection)
-        .transpose()?
-        .unwrap_or_default();
     let plan = build_plan(&args.source, &args.dest, &prefix, &series, &tag, &only)?;
-
-    for ep in &plan {
-        let status = if ep.target.exists() {
-            "SKIP (output exists)"
-        } else {
-            "ENCODE"
-        };
-        println!(
-            "{:<7} {:<22} subs={} -> {}",
-            ep.id.to_string(),
-            status,
-            ep.subs.len(),
-            file_name(&ep.target).unwrap_or_default()
-        );
-    }
+    print_plan(&plan);
 
     let ctx = Ctx {
         exe,
@@ -568,11 +637,6 @@ pub async fn run(args: EncodeArgs, cfg: &AppConfig) -> Result<()> {
         sub_lang,
         timeout: Duration::from_secs(args.timeout_min * 60),
     };
-    let work_root = args
-        .work_dir
-        .clone()
-        .or_else(|| cfg.encode.work_dir.clone())
-        .unwrap_or_else(|| std::env::temp_dir().join("subx-encode"));
 
     let (mut ok, mut skipped, mut failed) = (0, 0, 0);
     for ep in &plan {

@@ -4,7 +4,7 @@ All-in-one fansub toolkit in a single Rust binary: extract subtitles/audio from
 video, clean and retime them, translate via LibreTranslate or any
 OpenAI-compatible AI model, QC the result, and mux it back.
 
-Status: **complete** — 85 unit + 7 end-to-end tests, `clippy --all-targets -D warnings` clean.
+Status: **complete** — 91 unit + 7 end-to-end tests, `clippy --all-targets -D warnings` clean.
 
 ## Requirements
 
@@ -42,7 +42,7 @@ Shortcuts: `make build-release`, `make check`, `make run ARGS="..."`.
 | `probe` | Full media metadata: format, streams, chapters, tags (`--json` for scripts) |
 | `fetch` | Download subtitles via `yt-dlp` |
 | `stats` | QC report: reading speed (CPS), durations, overlaps |
-| `encode` | Batch-encode a folder through a StaxRip template: JP audio only, no embedded subs/fonts, matching external subs added |
+| `encode` | Batch-encode a folder: one audio language, no embedded subs/fonts, matching external subs added — through a StaxRip template or natively (ffmpeg → SVT-AV1/x265, Opus/AAC, mkvmerge) from a TOML profile |
 | `tools` | Check, locate or install the external binaries (ffmpeg, MKVToolNix, SVT-AV1, x265, qaac, yt-dlp, ...) |
 
 ```powershell

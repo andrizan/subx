@@ -46,6 +46,18 @@ pub struct ToolsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EncodeConfig {
+    /// `staxrip` (drive StaxRip) or `native` (ffmpeg + encoder + mkvmerge).
+    pub engine: String,
+    /// Default `[encode.profiles.*]` entry for the native engine.
+    pub profile: Option<String>,
+    /// Episodes encoded concurrently by the native engine.
+    pub jobs: usize,
+    /// Kill an episode whose encoder output has not grown for this many minutes.
+    pub stall_min: u64,
+    /// AAC encoders tried in order: `qaac`, `ffmpeg-fdk`, `fdkaac`, `ffmpeg-aac`.
+    pub aac_encoders: Vec<String>,
+    /// Native encode profiles by name.
+    pub profiles: std::collections::BTreeMap<String, Profile>,
     /// StaxRip template name (case and punctuation are ignored).
     pub template: Option<String>,
     /// Output name prefix such as `[GROUP]`; empty for none.
@@ -60,6 +72,66 @@ pub struct EncodeConfig {
     pub sub_lang: String,
     /// Folder for per-episode work copies (default: `<temp>/subx-encode`).
     pub work_dir: Option<PathBuf>,
+}
+
+/// One `[encode.profiles.<name>]` entry: what the native engine produces.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Profile {
+    /// Tag in the output name; falls back to `[encode] tag`.
+    pub tag: Option<String>,
+    /// Target size; 0 keeps the source size.
+    pub width: u32,
+    pub height: u32,
+    /// `none`, `auto` (cropdetect, phase 5) or `left,top,right,bottom`.
+    pub crop: String,
+    /// `ffmpeg` (decode + zscale) or `vapoursynth` (phase 5).
+    pub source: String,
+    /// `svt-av1` or `x265`.
+    pub encoder: String,
+    /// Encoder arguments copied verbatim from the StaxRip command line.
+    pub video: Vec<String>,
+    pub audio: AudioSpec,
+    /// `bt709`, `bt601` or `source` (pass the source's signalled values through).
+    pub color: String,
+    /// Attach fonts referenced by the subtitles (phase 5).
+    pub fonts: bool,
+}
+
+/// Audio part of a profile.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AudioSpec {
+    /// `opus`, `aac-lc`, `he-aac`, `he-aac-v2`.
+    pub codec: String,
+    /// kbit/s.
+    pub bitrate: u32,
+}
+
+impl Default for Profile {
+    fn default() -> Self {
+        Self {
+            tag: None,
+            width: 0,
+            height: 0,
+            crop: "none".to_string(),
+            source: "ffmpeg".to_string(),
+            encoder: "svt-av1".to_string(),
+            video: Vec::new(),
+            audio: AudioSpec::default(),
+            color: "bt709".to_string(),
+            fonts: false,
+        }
+    }
+}
+
+impl Default for AudioSpec {
+    fn default() -> Self {
+        Self {
+            codec: "opus".to_string(),
+            bitrate: 96,
+        }
+    }
 }
 
 impl Default for AppConfig {
@@ -83,6 +155,15 @@ impl Default for AppConfig {
 impl Default for EncodeConfig {
     fn default() -> Self {
         Self {
+            engine: "staxrip".to_string(),
+            profile: None,
+            jobs: 1,
+            stall_min: 5,
+            aac_encoders: ["qaac", "ffmpeg-fdk", "fdkaac", "ffmpeg-aac"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            profiles: std::collections::BTreeMap::new(),
             template: None,
             prefix: String::new(),
             tag: String::new(),
@@ -179,6 +260,37 @@ mod tests {
         assert_eq!(cfg.encode.audio_lang, "jpn");
         assert_eq!(cfg.encode.sub_lang, "id");
         assert!(cfg.encode.prefix.is_empty() && cfg.encode.tag.is_empty());
+        assert_eq!(cfg.encode.engine, "staxrip");
+        assert_eq!(cfg.encode.jobs, 1);
+        assert_eq!(cfg.encode.aac_encoders[0], "qaac");
+        assert!(cfg.encode.profiles.is_empty());
+    }
+
+    #[test]
+    fn parses_native_profiles() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("subx.toml");
+        std::fs::write(
+            &p,
+            "[encode]\nengine = \"native\"\nprofile = \"a480\"\njobs = 2\n\
+             [encode.profiles.a480]\ntag = \"BD 480p AV1.Opus\"\nwidth = 848\nheight = 480\n\
+             video = [\"--preset\", \"4\", \"--crf\", \"35\"]\naudio = { codec = \"opus\", bitrate = 96 }\n\
+             [encode.profiles.hevc]\nencoder = \"x265\"\naudio = { codec = \"he-aac\", bitrate = 80 }\n",
+        )
+        .unwrap();
+        let cfg = AppConfig::load(Some(&p));
+        assert_eq!(cfg.encode.engine, "native");
+        assert_eq!(cfg.encode.profile.as_deref(), Some("a480"));
+        assert_eq!(cfg.encode.jobs, 2);
+        let a = &cfg.encode.profiles["a480"];
+        assert_eq!((a.width, a.height), (848, 480));
+        assert_eq!(a.video, ["--preset", "4", "--crf", "35"]);
+        assert_eq!(a.encoder, "svt-av1");
+        assert_eq!(a.color, "bt709");
+        let h = &cfg.encode.profiles["hevc"];
+        assert_eq!(h.encoder, "x265");
+        assert_eq!((h.audio.codec.as_str(), h.audio.bitrate), ("he-aac", 80));
+        assert_eq!((h.width, h.height), (0, 0));
     }
 
     #[test]

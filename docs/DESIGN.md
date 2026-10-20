@@ -1,7 +1,11 @@
 # subx 2 — Design: native fansub pipeline
 
-Status: phases 0 (CI and releases), 1 (quick wins), 2 (tools module) and
-3 (episode identity) are implemented; phases 4–7 are pending. The current `encode` command drives StaxRip through its
+Status: phases 0 (CI and releases), 1 (quick wins), 2 (tools module),
+3 (episode identity) and 4 (native encode: `--engine native`, profiles, SVT-AV1
+and x265, Opus and the AAC chain, `-j`, stall watchdog, per-episode logs; the
+AV1+Opus reference episode reproduces StaxRip's output bit for bit) are
+implemented; phases 5–7 are pending. The default engine stays `staxrip` until
+phase 6. The current `encode` command drives StaxRip through its
 command line; this document describes the target architecture that removes
 that dependency while keeping the output equivalent, and the roadmap to get
 there. `AGENTS.md` conventions apply throughout.
@@ -77,7 +81,7 @@ Module layout (new or changed):
 | `common/procs.rs` | spawn with pipes, line-based progress parsing, timeout + kill tree |
 | `media/mkv.rs` | typed view over `mkvmerge -J` (tracks, `minimum_timestamp`, chapters, attachments) |
 | `commands/tools.rs` | `subx tools check \| install \| where` |
-| `commands/encode/*` | `plan.rs`, `video.rs` (backends), `audio.rs`, `mux.rs`, `verify.rs`, `staxrip.rs` (legacy engine) |
+| `commands/encode.rs` + `encode/native.rs` | plan, StaxRip engine and verification in `encode.rs`; the native pipeline (steps, pipes, watchdog, audio chain, mux) in `native.rs` |
 
 ## External binaries
 
@@ -391,6 +395,14 @@ ways and compare:
 
 The test is a `#[ignore]`d end-to-end test that takes the two files as
 environment variables, so CI never needs the binaries.
+
+Measured 2026-10-20 on the reference episode (11, template
+`Anime-480p.AV1.Opus96`, same SvtAv1EncApp/opusenc binaries): the native
+engine's video and audio streams have the **same MD5** as StaxRip's output
+(PSNR ∞), container properties and file size (72.9 MB) match exactly, and the
+job took 115 s against StaxRip's 113 s plus its demux/index/startup overhead.
+Same decoder, same zimg resize, same encoder parameters give the same bits;
+the SSIM threshold only matters once a profile deviates from the template.
 
 ## Crate changes
 

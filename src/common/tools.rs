@@ -30,6 +30,7 @@ pub enum Tool {
     X265,
     Qaac,
     Opusenc,
+    Fdkaac,
     Vspipe,
     YtDlp,
 }
@@ -101,7 +102,7 @@ const YTDLP_VERSION: &str = "2026.08.19";
 const MKVTOOLNIX_VERSION: &str = "103.0";
 
 impl Tool {
-    pub const ALL: [Tool; 10] = [
+    pub const ALL: [Tool; 11] = [
         Tool::Ffmpeg,
         Tool::Ffprobe,
         Tool::Mkvmerge,
@@ -110,6 +111,7 @@ impl Tool {
         Tool::X265,
         Tool::Qaac,
         Tool::Opusenc,
+        Tool::Fdkaac,
         Tool::Vspipe,
         Tool::YtDlp,
     ];
@@ -125,6 +127,7 @@ impl Tool {
             Tool::X265 => "x265",
             Tool::Qaac => "qaac",
             Tool::Opusenc => "opusenc",
+            Tool::Fdkaac => "fdkaac",
             Tool::Vspipe => "vspipe",
             Tool::YtDlp => "yt-dlp",
         }
@@ -147,6 +150,7 @@ impl Tool {
             Tool::Qaac if cfg!(windows) => "qaac64",
             Tool::Qaac => "qaac",
             Tool::Opusenc => "opusenc",
+            Tool::Fdkaac => "fdkaac",
             Tool::Vspipe => "vspipe",
             Tool::YtDlp => "yt-dlp",
         }
@@ -170,6 +174,7 @@ impl Tool {
             Tool::X265 => "x265",
             Tool::Qaac => "qaac",
             Tool::Opusenc => "opusenc",
+            Tool::Fdkaac => "fdkaac",
             Tool::Vspipe => "vapoursynth",
             Tool::YtDlp => "yt-dlp",
         }
@@ -194,6 +199,7 @@ impl Tool {
             Tool::X265 => "Encoders/x265",
             Tool::Qaac => "Audio/qaac",
             Tool::Opusenc => "Audio/opus",
+            Tool::Fdkaac => "Audio/fdkaac",
             Tool::Vspipe => "FrameServer/VapourSynth",
             Tool::YtDlp => "Support",
         }
@@ -209,6 +215,7 @@ impl Tool {
             Tool::X265 => "HEVC video encoding",
             Tool::Qaac => "AAC-LC / HE-AAC audio (Apple encoder)",
             Tool::Opusenc => "Opus audio (exact StaxRip chain; ffmpeg libopus otherwise)",
+            Tool::Fdkaac => "AAC-LC / HE-AAC / HE-AACv2 audio (libfdk-aac CLI)",
             Tool::Vspipe => "VapourSynth script source",
             Tool::YtDlp => "subtitle download (fetch)",
         }
@@ -223,6 +230,7 @@ impl Tool {
             Tool::X265 => "https://github.com/Patman86/x265-Mod-by-Patman/releases",
             Tool::Qaac => "https://github.com/nu774/qaac/releases",
             Tool::Opusenc => "https://opus-codec.org/downloads/",
+            Tool::Fdkaac => "https://github.com/nu774/fdkaac",
             Tool::Vspipe => "https://github.com/vapoursynth/vapoursynth/releases",
             Tool::YtDlp => "https://github.com/yt-dlp/yt-dlp/releases",
         }

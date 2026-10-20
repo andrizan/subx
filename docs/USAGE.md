@@ -177,11 +177,18 @@ Reports per file: event count, min/max durations, average/max reading speed
 ### `encode` — batch-encode through StaxRip
 
 ```
-subx encode <SOURCE> <DEST> [--template NAME] [--only 10-13] [--resolution 848x480]
+subx encode <SOURCE> <DEST> [--engine staxrip|native] [--only 10-13]
               [--prefix "[GROUP]"] [--series S] [--tag "BD 480p AV1.Opus"]
-              [--sub-lang id] [--audio-lang jpn] [--staxrip-dir DIR]
-              [--work-dir DIR] [--timeout-min 120] [--dry-run] [--allow-running]
+              [--sub-lang id] [--audio-lang jpn] [--work-dir DIR] [--dry-run]
+    staxrip:  [--template NAME] [--resolution 848x480] [--staxrip-dir DIR]
+              [--timeout-min 120] [--allow-running]
+    native:   [--profile NAME] [-j N] [--stall-min 5]
 ```
+
+Two engines produce the same kind of file. `staxrip` (the default) drives an
+installed StaxRip through its command line; `native` runs ffmpeg, the encoder
+and mkvmerge itself from a `[encode.profiles.*]` entry — no StaxRip needed,
+episodes can run in parallel, and every command line is logged.
 
 Windows only; needs StaxRip (its bundled MKVToolNix is used too). Every option
 except `--only`, `--series`, `--timeout-min` and the switches defaults to the
@@ -215,6 +222,48 @@ given one way or the other. For every video in `<SOURCE>`:
 - Refuses to start while StaxRip is running (`Jobs.dat`/`Settings.dat` are shared)
   unless `--allow-running`. `--dry-run` prints the plan and the StaxRip command
   lines without touching anything.
+
+#### Native engine
+
+```toml
+[encode]
+engine = "native"
+profile = "anime480p"
+jobs = 2                       # episodes at once; SVT-AV1 at 480p leaves cores idle
+aac_encoders = ["qaac", "ffmpeg-fdk", "fdkaac", "ffmpeg-aac"]
+
+[encode.profiles.anime480p]
+tag = "BD 480p AV1.Opus"
+width = 848                    # 0 keeps the source size
+height = 480
+encoder = "svt-av1"            # svt-av1 | x265
+video = ["--rc", "0", "--crf", "35", "--preset", "4", "--tune", "2",
+         "--adaptive-film-grain", "0", "--scd", "1", "--lookahead", "48"]
+audio = { codec = "opus", bitrate = 96 }   # opus | aac-lc | he-aac | he-aac-v2
+color = "bt709"                # bt709 | bt601 | source
+crop = "none"                  # none | left,top,right,bottom
+```
+
+Per episode: ffmpeg decodes the video, scales it with `zscale` (libzimg, the
+library behind VapourSynth's `resize.Spline36`) and pipes 10-bit y4m into
+`SvtAv1EncApp` or `x265` with the profile's `video` arguments copied from a
+StaxRip command line; concurrently the `--audio-lang` track is encoded —
+Opus through `opusenc` (ffmpeg `libopus` when absent), AAC through the first
+usable entry of `aac_encoders` (`qaac` needs Apple CoreAudio; `ffmpeg-fdk`
+needs an ffmpeg with `libfdk_aac`; `ffmpeg-aac` is AAC-LC only). Chapters are
+extracted with `mkvextract`, and `mkvmerge` muxes with the source's display
+aspect ratio, the audio delay from `minimum_timestamp`, the matching external
+subtitles and the chapters. The result is checked with `mkvmerge -J` (size,
+one audio track, subtitle count, no fonts, duration within 1 s).
+
+Every tool and the audio encoder are resolved before the first episode starts,
+so a profile asking for `he-aac` on a machine without an HE-AAC encoder fails
+at plan time with the list of what was tried. Each episode writes
+`encode.log` (all command lines and tool output) into its work folder; on
+success the log moves to `<work_dir>/logs/<episode>.log` and the intermediates
+are deleted, on failure everything stays. An encoder whose output stops
+growing for `--stall-min` minutes is killed. `--dry-run` prints the probed
+facts and every command line.
 
 ### `tools` — external binaries
 
@@ -265,6 +314,11 @@ so secrets and machine paths belong there.
 | `[encode] resolution` | `""` | `WIDTHxHEIGHT` locked in StaxRip; empty keeps the template's size |
 | `[encode] audio_lang` / `sub_lang` | `"jpn"` / `"id"` | audio track kept; subtitle language fallback |
 | `[encode] work_dir` | temp | folder for per-episode work copies |
+| `[encode] engine` | `"staxrip"` | `staxrip` or `native` |
+| `[encode] profile` | — | default `[encode.profiles.*]` entry for the native engine |
+| `[encode] jobs` / `stall_min` | `1` / `5` | native: concurrent episodes; minutes without output growth before a kill |
+| `[encode] aac_encoders` | `["qaac", "ffmpeg-fdk", "fdkaac", "ffmpeg-aac"]` | AAC encoder preference order |
+| `[encode.profiles.<name>]` | — | `tag`, `width`, `height`, `encoder`, `video`, `audio = { codec, bitrate }`, `color`, `crop` |
 
 ## Translate engines in depth
 
