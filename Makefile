@@ -3,7 +3,7 @@
 
 CARGO := cargo
 
-.PHONY: help build build-release test test-e2e lint fmt fmt-check check ci install clean run
+.PHONY: help build build-release test test-e2e lint fmt fmt-check check ci deny trivy actionlint install clean run
 
 help:
 	@echo "Targets:"
@@ -15,6 +15,9 @@ help:
 	@echo "  make fmt            - format code"
 	@echo "  make fmt-check      - fail if unformatted"
 	@echo "  make check | ci     - fmt-check + lint + test"
+	@echo "  make deny           - cargo-deny: advisories, licenses, bans (needs cargo-deny)"
+	@echo "  make trivy          - trivy fs scan: vulns, secrets, misconfig (needs trivy)"
+	@echo "  make actionlint     - lint .github/workflows (needs actionlint)"
 	@echo "  make install        - cargo install the binary"
 	@echo "  make clean          - drop build artifacts"
 	@echo "  make run ARGS=...   - run, e.g. ARGS=\"extract --help\""
@@ -43,6 +46,15 @@ fmt-check:
 check: fmt-check lint test
 
 ci: check
+
+deny:
+	$(CARGO) deny check
+
+trivy:
+	trivy fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --skip-dirs target --skip-files subx.local.toml .
+
+actionlint:
+	actionlint -color .github/workflows/*.yml
 
 install:
 	$(CARGO) install --path .

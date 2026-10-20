@@ -66,8 +66,11 @@ cargo fmt --check && cargo clippy -- -D warnings && cargo test   # gate (or: mak
 cargo test -- --ignored                                          # end-to-end (needs ffmpeg)
 ```
 
-Conventions: [`AGENTS.md`](AGENTS.md). Releases (Windows + Linux binaries with
-checksums + changelog) build automatically from `v*` tags.
+Conventions: [`AGENTS.md`](AGENTS.md); architecture and roadmap:
+[`docs/DESIGN.md`](docs/DESIGN.md). Every PR builds release binaries for all
+supported targets (7-day artifacts); a `v*` tag publishes archives for
+Windows x64/arm64, Linux x64/arm64 (static musl) and macOS arm64, plus
+`SHA256SUMS` and a changelog.
 
 ## License
 

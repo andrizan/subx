@@ -27,6 +27,9 @@ cargo install --path .      # via cargo (run at the repo root)
 cargo build --release       # or binary at target/release/subx.exe
 ```
 
+Prebuilt archives (`subx-<version>-<target>.zip` / `.tar.xz` with `SHA256SUMS`)
+are on the Releases page for Windows x64/arm64, Linux x64/arm64 (static) and
+macOS arm64; unpack and put `subx` on `PATH`.
 Or from the repo root: `make build-release`, `make check`, `make install`.
 `ffmpeg` via `winget install ffmpeg` / `scoop install ffmpeg`;
 `yt-dlp` (for `fetch`) via `winget install yt-dlp`.

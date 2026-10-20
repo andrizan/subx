@@ -1,83 +1,92 @@
-name: Release (Rust)
+name: Release
 
-# Release builds run ONLY on version tags (v*.*.*). Every push/PR is covered
-# by ci-rust.yml (fmt + clippy + test) instead — no binaries built there.
+# Runs only on version tags (v*). The tag must match Cargo.toml, then the
+# shared build matrix (build.yml) produces one binary per supported target,
+# which is packaged with docs and config examples, checksummed and published
+# together with a git-cliff changelog.
 on:
   push:
     tags:
       - "v*"
 
 permissions:
-  contents: write # required to create the GitHub Release
+  contents: write # create the GitHub Release
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    name: Build (${{ matrix.pkg }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: windows-latest
-            src: target/release/subx.exe
-            pkg: subx-windows-amd64.exe
-          - os: ubuntu-latest
-            src: target/release/subx
-            pkg: subx-linux-amd64
+  guard:
+    name: Tag matches Cargo.toml
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: |
+          crate="$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[0].version')"
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$crate" != "$tag" ]; then
+            echo "::error::tag v$tag does not match Cargo.toml version $crate"
+            exit 1
+          fi
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Build release binary
-        run: cargo build --release
-
-      - name: Package
-        shell: bash
-        run: |
-          mkdir -p dist
-          cp "${{ matrix.src }}" "dist/${{ matrix.pkg }}"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.pkg }}
-          path: dist/${{ matrix.pkg }}
-          if-no-files-found: error
+  build:
+    name: Build
+    needs: guard
+    uses: ./.github/workflows/build.yml
+    with:
+      retention-days: 1
 
   release:
     name: Publish release
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout source (full history for git-cliff)
-        uses: actions/checkout@v4
+      - name: Checkout (full history for git-cliff)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
+      - name: Download binaries
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          path: dist
-          merge-multiple: true
+          path: artifacts
 
-      - name: Checksums
+      - name: Package archives + SHA256SUMS
         run: |
-          cd dist
-          sha256sum * > checksums.txt
-          cat checksums.txt
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist stage
+          for dir in artifacts/subx-*; do
+            target="${dir#artifacts/subx-}"
+            name="subx-${version}-${target}"
+            mkdir -p "stage/$name"
+            cp README.md LICENSE subx.toml subx.local.toml.example "stage/$name/"
+            case "$target" in
+              *windows*)
+                cp "$dir/subx.exe" "stage/$name/"
+                (cd stage && zip -qr "../dist/$name.zip" "$name")
+                ;;
+              *)
+                cp "$dir/subx" "stage/$name/"
+                chmod +x "stage/$name/subx"
+                tar -C stage -cJf "dist/$name.tar.xz" "$name"
+                ;;
+            esac
+          done
+          (cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
 
       - name: Changelog (git-cliff)
-        run: |
-          docker run --rm -v "${{ github.workspace }}:/app" -w /app orhunp/git-cliff:latest --latest --strip all > RELEASE_NOTES.md
-          cat RELEASE_NOTES.md
+        id: cliff
+        uses: orhun/git-cliff-action@a9a95522b26fe6403f7bb24031f21fb573d0f5ff # v4.9.1
+        with:
+          config: cliff.toml
+          args: --latest --strip all
+        env:
+          OUTPUT: RELEASE_NOTES.md
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           body_path: RELEASE_NOTES.md
-          files: |
-            dist/subx-windows-amd64.exe
-            dist/subx-linux-amd64
-            dist/checksums.txt
+          files: dist/*
+          fail_on_unmatched_files: true

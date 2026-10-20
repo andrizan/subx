@@ -1,0 +1,85 @@
+name: Build
+
+# Reusable release-build matrix shared by ci.yml (PR artifacts) and
+# release.yml (published archives), so the two can never drift apart.
+# Tiers follow docs/DESIGN.md "Supported platforms and releases".
+on:
+  workflow_call:
+    inputs:
+      retention-days:
+        description: How many days to keep the per-target binaries
+        type: number
+        default: 7
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.target }} (tier ${{ matrix.tier }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            tier: 1
+            bin: subx.exe
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            tier: 2
+            bin: subx
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+            tier: 2
+            bin: subx
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
+            tier: 3
+            bin: subx.exe
+          - target: aarch64-apple-darwin
+            os: macos-15
+            tier: 3
+            bin: subx
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1 (stable)
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: musl linker
+        if: contains(matrix.target, 'musl')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+
+      - name: Cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Smoke test
+        shell: bash
+        run: ./target/${{ matrix.target }}/release/${{ matrix.bin }} --version
+
+      - name: Unit tests
+        run: cargo test --locked --target ${{ matrix.target }}
+
+      - name: Upload binary
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: subx-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/${{ matrix.bin }}
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention-days }}
