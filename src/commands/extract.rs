@@ -1,13 +1,16 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use clap::Args;
+use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 
+use crate::common::tools::Tool;
 use crate::common::{fs, lang, tools};
-use crate::media::probe;
+use crate::media::{mkv, probe};
 
 /// `subx extract <FOLDER>` — extract subtitles (and optionally audio).
 #[derive(Debug, Args)]
@@ -38,6 +41,31 @@ pub struct ExtractArgs {
     /// Audio output folder (default: `<FOLDER>/audio`).
     #[arg(long)]
     pub audio_out: Option<PathBuf>,
+
+    /// Also extract attached fonts (MKV only), deduplicated by content.
+    #[arg(long)]
+    pub fonts: bool,
+
+    /// Fonts output folder (default: `<FOLDER>/fonts`).
+    #[arg(long)]
+    pub fonts_out: Option<PathBuf>,
+
+    /// Also extract chapters (MKV only) as XML and simple text.
+    #[arg(long)]
+    pub chapters: bool,
+
+    /// Chapters output folder (default: `<FOLDER>/chapters`).
+    #[arg(long)]
+    pub chapters_out: Option<PathBuf>,
+}
+
+/// Font/chapter extraction through MKVToolNix (Matroska sources only).
+#[derive(Debug, Clone)]
+struct MkvExtras {
+    mkvmerge: PathBuf,
+    mkvextract: PathBuf,
+    fonts_dir: Option<PathBuf>,
+    chapters_dir: Option<PathBuf>,
 }
 
 /// One subtitle or audio track picked from ffprobe output.
@@ -72,6 +100,13 @@ struct Stats {
     failed_audio: usize,
     skipped_audio: usize,
     lang_count: HashMap<String, usize>,
+    total_fonts: usize,
+    dup_fonts: usize,
+    failed_fonts: usize,
+    total_chapters: usize,
+    failed_chapters: usize,
+    /// SHA-256 of every font written this run -> file name, for deduplication.
+    font_hashes: HashMap<String, String>,
 }
 
 /// Parse `--ext "mkv,mp4,.mka"` into lowercase extensions without dots.
@@ -147,6 +182,138 @@ fn bump_failed(stats: &Arc<Mutex<Stats>>) {
     stats.lock().expect("stats lock poisoned").failed_subs += 1;
 }
 
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Destination for an attachment: its own (sanitized) name, or
+/// `<stem>-<hash8>.<ext>` when a different file already owns that name.
+fn font_dest(dir: &Path, name: &str, hash: &str) -> PathBuf {
+    // Some muxers store the attachment's original path; only the name matters.
+    let name = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s, e),
+        _ => (name, "bin"),
+    };
+    let safe = fs::sanitize_filename(stem);
+    let plain = dir.join(format!("{safe}.{ext}"));
+    if !plain.exists() {
+        return plain;
+    }
+    dir.join(format!("{safe}-{}.{ext}", &hash[..8.min(hash.len())]))
+}
+
+/// Pull font attachments into `dir`, skipping bytes already present under any
+/// name (same SHA-256). Returns `(new, duplicates, failed)`.
+async fn extract_fonts(
+    mkvextract: &Path,
+    file: &Path,
+    safe: &str,
+    info: &serde_json::Value,
+    dir: &Path,
+    stats: &Arc<Mutex<Stats>>,
+) -> (usize, usize, usize) {
+    let (mut new, mut dup, mut failed) = (0usize, 0usize, 0usize);
+    for (id, name) in mkv::font_attachments(info) {
+        // Workers run concurrently and attachment ids repeat per file, so the
+        // temp name carries the source's stem too.
+        let tmp = dir.join(format!(".subx-{}-{safe}-{id}.part", std::process::id()));
+        let status = tokio::process::Command::new(mkvextract)
+            .arg(file)
+            .arg("attachments")
+            .arg(format!("{id}:{}", tmp.display()))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await;
+        let ok = status.map(|s| s.code().unwrap_or(2) < 2).unwrap_or(false) && tmp.is_file();
+        let bytes = if ok { std::fs::read(&tmp).ok() } else { None };
+        let Some(bytes) = bytes else {
+            let _ = std::fs::remove_file(&tmp);
+            failed += 1;
+            continue;
+        };
+        let hash = sha256_hex(&bytes);
+        let mut st = stats.lock().expect("stats lock poisoned");
+        if st.font_hashes.contains_key(&hash) {
+            drop(st);
+            let _ = std::fs::remove_file(&tmp);
+            dup += 1;
+            continue;
+        }
+        let dest = font_dest(dir, &name, &hash);
+        // A file from an earlier run with the same bytes is a duplicate too.
+        if dest.exists()
+            && std::fs::read(&dest)
+                .map(|b| sha256_hex(&b) == hash)
+                .unwrap_or(false)
+        {
+            st.font_hashes.insert(hash, name);
+            drop(st);
+            let _ = std::fs::remove_file(&tmp);
+            dup += 1;
+            continue;
+        }
+        match std::fs::rename(&tmp, &dest) {
+            Ok(()) => {
+                st.font_hashes.insert(
+                    hash,
+                    dest.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or(name),
+                );
+                st.total_fonts += 1;
+                new += 1;
+            }
+            Err(_) => {
+                let _ = std::fs::remove_file(&tmp);
+                failed += 1;
+            }
+        }
+    }
+    (new, dup, failed)
+}
+
+/// `<dir>/<safe>.xml` and `<safe>.txt`; `Ok(false)` when the file has no
+/// chapters or the outputs exist and `overwrite` is off.
+async fn extract_chapters(
+    mkvextract: &Path,
+    file: &Path,
+    info: &serde_json::Value,
+    dir: &Path,
+    safe: &str,
+    overwrite: bool,
+) -> Result<bool, String> {
+    if mkv::chapter_entries(info) == 0 {
+        return Ok(false);
+    }
+    let xml = dir.join(format!("{safe}.xml"));
+    let txt = dir.join(format!("{safe}.txt"));
+    if xml.exists() && !overwrite {
+        return Ok(false);
+    }
+    for (out, simple) in [(&xml, false), (&txt, true)] {
+        let mut cmd = tokio::process::Command::new(mkvextract);
+        cmd.arg(file).arg("chapters").arg(out);
+        if simple {
+            cmd.arg("--simple");
+        }
+        let status = cmd
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+            .map_err(|e| format!("spawn({e})"))?;
+        if status.code().unwrap_or(2) >= 2 {
+            return Err(format!("mkvextract(exit={})", status.code().unwrap_or(-1)));
+        }
+    }
+    Ok(true)
+}
+
 /// Run `ffmpeg -map 0:{index}` (+ optional extra args) and verify the output
 /// exists and is non-empty. Returns the failure reason on error.
 async fn extract_track(
@@ -175,6 +342,15 @@ async fn extract_track(
     }
 }
 
+/// Where outputs go and how existing files are treated; shared by all workers.
+#[derive(Debug, Clone)]
+struct Targets {
+    out_base: PathBuf,
+    audio_base: Option<PathBuf>,
+    extras: Option<MkvExtras>,
+    overwrite: bool,
+}
+
 pub async fn run(args: ExtractArgs) -> Result<()> {
     let (ffmpeg, ffprobe) = tools::ffmpeg_pair()?;
 
@@ -195,6 +371,32 @@ pub async fn run(args: ExtractArgs) -> Result<()> {
     } else {
         None
     };
+    let extras = if args.fonts || args.chapters {
+        let paths = tools::require(&[Tool::Mkvmerge, Tool::Mkvextract])?;
+        let dir_for = |on: bool, custom: &Option<PathBuf>, name: &str| -> Result<Option<PathBuf>> {
+            if !on {
+                return Ok(None);
+            }
+            let dir = custom.clone().unwrap_or_else(|| args.folder.join(name));
+            std::fs::create_dir_all(&dir)
+                .with_context(|| format!("cannot create {}", dir.display()))?;
+            Ok(Some(dir))
+        };
+        Some(MkvExtras {
+            mkvmerge: paths[0].clone(),
+            mkvextract: paths[1].clone(),
+            fonts_dir: dir_for(args.fonts, &args.fonts_out, "fonts")?,
+            chapters_dir: dir_for(args.chapters, &args.chapters_out, "chapters")?,
+        })
+    } else {
+        None
+    };
+    let targets = Arc::new(Targets {
+        out_base: out_base.clone(),
+        audio_base: audio_base.clone(),
+        extras: extras.clone(),
+        overwrite: args.overwrite,
+    });
 
     let exts = parse_exts(&args.ext);
     let mut files: Vec<PathBuf> = std::fs::read_dir(&args.folder)
@@ -238,21 +440,10 @@ pub async fn run(args: ExtractArgs) -> Result<()> {
         let bar = bar.clone();
         let ffmpeg = ffmpeg.clone();
         let ffprobe = ffprobe.clone();
-        let out_base = out_base.clone();
-        let audio_base = audio_base.clone();
-        let overwrite = args.overwrite;
+        let targets = Arc::clone(&targets);
         handles.push(tokio::spawn(async move {
             let _permit = sem.acquire_owned().await.expect("semaphore closed");
-            let line = process_file(
-                &ffmpeg,
-                &ffprobe,
-                &file,
-                &out_base,
-                audio_base.as_deref(),
-                overwrite,
-                &stats,
-            )
-            .await;
+            let line = process_file(&ffmpeg, &ffprobe, &file, &targets, &stats).await;
             bar.inc(1);
             line
         }));
@@ -267,27 +458,38 @@ pub async fn run(args: ExtractArgs) -> Result<()> {
     }
 
     let stats = stats.lock().expect("stats lock poisoned");
-    print_stats(&stats, &out_base, audio_base.as_deref());
+    print_stats(&stats, &out_base, audio_base.as_deref(), extras.as_ref());
 
     if stats.total_subs == 0
         && stats.total_audio == 0
         && stats.skipped_tracks == 0
         && stats.skipped_audio == 0
+        && stats.total_fonts == 0
+        && stats.dup_fonts == 0
+        && stats.total_chapters == 0
     {
         anyhow::bail!("Nothing was extracted.");
     }
     Ok(())
 }
 
+fn is_matroska(file: &Path) -> bool {
+    file.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("mkv") || e.eq_ignore_ascii_case("mka"))
+}
+
 async fn process_file(
     ffmpeg: &Path,
     ffprobe: &Path,
     file: &Path,
-    out_base: &Path,
-    audio_base: Option<&Path>,
-    overwrite: bool,
+    targets: &Targets,
     stats: &Arc<Mutex<Stats>>,
 ) -> String {
+    let out_base = targets.out_base.as_path();
+    let audio_base = targets.audio_base.as_deref();
+    let extras = targets.extras.as_ref();
+    let overwrite = targets.overwrite;
     let name = file
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -317,7 +519,7 @@ async fn process_file(
         .map(&track_of)
         .collect();
 
-    if tracks.is_empty() && audio_base.is_none() {
+    if tracks.is_empty() && audio_base.is_none() && extras.is_none() {
         return format!("{name} -- no subtitles found.");
     }
     if !tracks.is_empty() {
@@ -408,9 +610,53 @@ async fn process_file(
         }
     }
 
+    let mut notes: Vec<String> = Vec::new();
+    if let Some(x) = extras
+        && is_matroska(file)
+    {
+        match mkv::info(&x.mkvmerge, file).await {
+            Ok(info) => {
+                if let Some(dir) = &x.fonts_dir {
+                    let (new, dup, failed) =
+                        extract_fonts(&x.mkvextract, file, &safe, &info, dir, stats).await;
+                    let mut st = stats.lock().expect("stats lock poisoned");
+                    st.dup_fonts += dup;
+                    st.failed_fonts += failed;
+                    drop(st);
+                    notes.push(if dup > 0 {
+                        format!("{new} font(s), {dup} dup")
+                    } else {
+                        format!("{new} font(s)")
+                    });
+                    if failed > 0 {
+                        problems.push(format!("fonts:{failed} failed"));
+                    }
+                }
+                if let Some(dir) = &x.chapters_dir {
+                    match extract_chapters(&x.mkvextract, file, &info, dir, &safe, overwrite).await
+                    {
+                        Ok(true) => {
+                            stats.lock().expect("stats lock poisoned").total_chapters += 1;
+                            notes.push("chapters".to_string());
+                        }
+                        Ok(false) => {}
+                        Err(e) => {
+                            stats.lock().expect("stats lock poisoned").failed_chapters += 1;
+                            problems.push(format!("chapters:{e}"));
+                        }
+                    }
+                }
+            }
+            Err(e) => problems.push(format!("mkvmerge:{e:#}")),
+        }
+    }
+
     let mut line = format!("{name} OK {extracted}/{} subtitle(s)", tracks.len());
     if audio_base.is_some() {
         line.push_str(&format!(" + {audio_done}/{audio_total} audio"));
+    }
+    for note in &notes {
+        line.push_str(&format!(" + {note}"));
     }
     line.push_str(&format!(" [{}]", debug.join(" | ")));
     if !problems.is_empty() {
@@ -419,7 +665,12 @@ async fn process_file(
     line
 }
 
-fn print_stats(stats: &Stats, out_base: &Path, audio_base: Option<&Path>) {
+fn print_stats(
+    stats: &Stats,
+    out_base: &Path,
+    audio_base: Option<&Path>,
+    extras: Option<&MkvExtras>,
+) {
     println!("\n========================================");
     println!("             FINAL STATISTICS");
     println!("========================================");
@@ -466,6 +717,31 @@ fn print_stats(stats: &Stats, out_base: &Path, audio_base: Option<&Path>) {
         && let Some(adir) = audio_base
     {
         println!("Audio saved in: {}", adir.display());
+    }
+    if let Some(dir) = extras.and_then(|x| x.fonts_dir.as_ref()) {
+        println!(
+            "Fonts extracted           : {} ({} duplicate(s) skipped{}) -> {}",
+            stats.total_fonts,
+            stats.dup_fonts,
+            if stats.failed_fonts > 0 {
+                format!(", {} failed", stats.failed_fonts)
+            } else {
+                String::new()
+            },
+            dir.display()
+        );
+    }
+    if let Some(dir) = extras.and_then(|x| x.chapters_dir.as_ref()) {
+        println!(
+            "Chapters extracted        : {}{} -> {}",
+            stats.total_chapters,
+            if stats.failed_chapters > 0 {
+                format!(" ({} failed)", stats.failed_chapters)
+            } else {
+                String::new()
+            },
+            dir.display()
+        );
     }
 }
 
@@ -526,6 +802,35 @@ mod tests {
             output_stem("Show_01", 'S', 2, &long).chars().count(),
             "Show_01.S2.".chars().count() + 50
         );
+    }
+
+    #[test]
+    fn font_destinations_avoid_clobbering() {
+        let dir = tempfile::tempdir().unwrap();
+        let hash = "0123456789abcdef";
+        assert_eq!(
+            font_dest(dir.path(), "S2G Moon.ttf", hash),
+            dir.path().join("S2G_Moon.ttf")
+        );
+        std::fs::write(dir.path().join("S2G_Moon.ttf"), b"other").unwrap();
+        assert_eq!(
+            font_dest(dir.path(), "S2G Moon.ttf", hash),
+            dir.path().join("S2G_Moon-01234567.ttf")
+        );
+        assert_eq!(
+            font_dest(dir.path(), "noext", hash),
+            dir.path().join("noext.bin")
+        );
+        // ffmpeg's -attach records the full path; only the file name is kept.
+        assert_eq!(
+            font_dest(dir.path(), r"C:\src\videos\Only01.otf", hash),
+            dir.path().join("Only01.otf")
+        );
+        assert_eq!(
+            font_dest(dir.path(), "a/b/Foo Bar.ttf", hash),
+            dir.path().join("Foo_Bar.ttf")
+        );
+        assert_eq!(sha256_hex(b"").len(), 64);
     }
 
     #[test]
@@ -674,6 +979,10 @@ mod tests {
             overwrite: false,
             audio: true,
             audio_out: Some(audio_out.clone()),
+            fonts: false,
+            fonts_out: None,
+            chapters: false,
+            chapters_out: None,
         })
         .await
         .expect("extract failed");
@@ -709,8 +1018,94 @@ mod tests {
             overwrite: false,
             audio: true,
             audio_out: Some(audio_out),
+            fonts: false,
+            fonts_out: None,
+            chapters: false,
+            chapters_out: None,
         })
         .await
         .expect("repeat run should succeed (all skipped)");
+    }
+
+    /// Fonts (deduplicated) and chapters out of MKVs built with ffmpeg.
+    /// Needs ffmpeg + MKVToolNix; skips when mkvmerge/mkvextract are absent.
+    /// Run explicitly: `cargo test -- --ignored`.
+    #[tokio::test]
+    #[ignore = "needs ffmpeg/ffprobe and MKVToolNix binaries"]
+    async fn e2e_extract_fonts_and_chapters() {
+        if tools::require(&[Tool::Mkvmerge, Tool::Mkvextract]).is_err() {
+            eprintln!("MKVToolNix not found; skipping");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let videos = dir.path().join("videos");
+        std::fs::create_dir_all(&videos).unwrap();
+        // Two episodes attach the same font bytes under different names plus
+        // one unique font each; both carry two chapters.
+        let shared = b"SHARED-FONT-BYTES-0123456789".to_vec();
+        for (n, unique) in [("01", b"UNIQUE-A".to_vec()), ("02", b"UNIQUE-B".to_vec())] {
+            let plain = mux_episode(&videos, &format!("Plain - {n}"));
+            let font_a = videos.join(format!("Shared{n}.ttf"));
+            let font_b = videos.join(format!("Only{n}.otf"));
+            let meta = videos.join(format!("chapters{n}.txt"));
+            std::fs::write(&font_a, &shared).unwrap();
+            std::fs::write(&font_b, &unique).unwrap();
+            std::fs::write(
+                &meta,
+                ";FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=1000\ntitle=Intro\n\
+                 [CHAPTER]\nTIMEBASE=1/1000\nSTART=1000\nEND=2000\ntitle=Main\n",
+            )
+            .unwrap();
+            let out = videos.join(format!("Show - {n}.mkv"));
+            let status = std::process::Command::new("ffmpeg")
+                .arg("-y")
+                .args(["-v", "error", "-i"])
+                .arg(&plain)
+                .arg("-i")
+                .arg(&meta)
+                .args(["-map_metadata", "1", "-map", "0", "-c", "copy"])
+                .arg("-attach")
+                .arg(&font_a)
+                .args(["-metadata:s:t:0", "mimetype=application/x-truetype-font"])
+                .arg("-attach")
+                .arg(&font_b)
+                .args(["-metadata:s:t:1", "mimetype=application/vnd.ms-opentype"])
+                .arg(&out)
+                .status()
+                .expect("ffmpeg binary missing");
+            assert!(status.success(), "ffmpeg could not attach fonts");
+            std::fs::remove_file(plain).unwrap();
+        }
+
+        let out = dir.path().join("out");
+        run(ExtractArgs {
+            folder: videos.clone(),
+            out: Some(out.clone()),
+            jobs: 2,
+            ext: "mkv".to_string(),
+            overwrite: false,
+            audio: false,
+            audio_out: None,
+            fonts: true,
+            fonts_out: Some(out.join("fonts")),
+            chapters: true,
+            chapters_out: Some(out.join("chapters")),
+        })
+        .await
+        .expect("extract failed");
+
+        // Shared bytes once, each unique font once: three files, not four.
+        let fonts = list_names(&out.join("fonts"));
+        assert_eq!(fonts.len(), 3, "{fonts:?}");
+        assert!(fonts.iter().any(|f| f.starts_with("Shared")), "{fonts:?}");
+        assert!(fonts.iter().any(|f| f == "Only01.otf") && fonts.iter().any(|f| f == "Only02.otf"));
+
+        let chapters = list_names(&out.join("chapters"));
+        assert_eq!(chapters.len(), 4, "{chapters:?}"); // xml + txt per episode
+        let txt = std::fs::read_to_string(out.join("chapters").join("Show___01.txt")).unwrap();
+        assert!(
+            txt.contains("CHAPTER01NAME=Intro") && txt.contains("CHAPTER02NAME=Main"),
+            "{txt}"
+        );
     }
 }

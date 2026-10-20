@@ -48,4 +48,6 @@ pub enum Commands {
     Encode(crate::commands::encode::EncodeArgs),
     /// Check, locate or install the external tools (ffmpeg, mkvmerge, encoders, ...).
     Tools(crate::commands::tools::ToolsArgs),
+    /// List the fonts ASS scripts need and whether they are attached, installed or missing.
+    Fonts(crate::commands::fonts::FontsArgs),
 }

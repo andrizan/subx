@@ -299,16 +299,7 @@ fn staxrip_cmdline(
 }
 
 pub(crate) async fn mkv_info(mkvmerge: &Path, file: &Path) -> Result<Value> {
-    let out = tokio::process::Command::new(mkvmerge)
-        .arg("-J")
-        .arg(file)
-        .output()
-        .await
-        .with_context(|| "cannot start mkvmerge")?;
-    if out.status.code().unwrap_or(2) >= 2 {
-        anyhow::bail!("mkvmerge -J failed for {}", file.display());
-    }
-    serde_json::from_slice(&out.stdout).with_context(|| "cannot parse mkvmerge JSON")
+    crate::media::mkv::info(mkvmerge, file).await
 }
 
 fn track_matches_lang(track: &Value, lang: &str) -> bool {

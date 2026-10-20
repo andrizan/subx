@@ -37,7 +37,9 @@ libre_url = "http://localhost:5000"
 # height = 480
 # encoder = "svt-av1"                     # svt-av1 | x265
 # video = ["--rc", "0", "--crf", "35", "--preset", "4", "--tune", "2"]
-# audio = { codec = "opus", bitrate = 96 }   # opus | aac-lc | he-aac | he-aac-v2
+# audio = { codec = "opus", bitrate = 96 }   # opus | aac-lc | he-aac | he-aac-v2 | xhe-aac
+# crop = "none"                           # none | auto | left,top,right,bottom
+# source = "ffmpeg"                       # or "vapoursynth" with script = "scripts/anime.vpy"
 #
 # StaxRip engine instead (engine = "staxrip"): needs StaxRip and a template.
 # [tools]

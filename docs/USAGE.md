@@ -76,6 +76,7 @@ file tags. `--json` dumps raw ffprobe JSON for scripting.
 ```
 subx extract <FOLDER> [--out subs] [-j 8] [--ext mkv,mp4,mka] [--overwrite]
                         [--audio] [--audio-out audio]
+                        [--fonts] [--fonts-out fonts] [--chapters] [--chapters-out chapters]
 ```
 
 - Probes every video with ffprobe; Indonesian (`id`) goes to the output root,
@@ -85,6 +86,24 @@ subx extract <FOLDER> [--out subs] [-j 8] [--ext mkv,mp4,mka] [--overwrite]
 - Filenames are Windows-sanitized and length-capped; existing files are skipped
   unless `--overwrite`. Image subtitles (PGS/DVD) are copied as `.sup` — they
   cannot be cleaned or translated (no text layer).
+- `--fonts` pulls the font attachments of MKV sources (via `mkvextract`) into
+  one folder, deduplicated by content across the whole season (same bytes
+  under any name are written once); `--chapters` writes `<name>.xml` and the
+  simple `<name>.txt` chapter list. Both need MKVToolNix (`subx tools check`).
+
+### `fonts` — are the fonts there?
+
+```
+subx fonts <ASS|FOLDER> [--fonts-dir DIR] [--no-system] [--json]
+```
+
+Reads every `Style:` font and `\fn` override in the scripts (folders are
+searched recursively), then reports each family as `attached` (found in
+`--fonts-dir`, default `fonts/` next to the input), `system` (installed in the
+OS font folders) or `MISSING`, with the scripts that use it. Font files are
+matched by the names inside them (family, full and typographic names of TTF,
+OTF and TTC), not by file name. Exit code `1` when anything is missing, so it
+works as a pre-mux check.
 
 ### `clean` — scrub ASS, keep karaoke
 
@@ -240,9 +259,11 @@ height = 480
 encoder = "svt-av1"            # svt-av1 | x265
 video = ["--rc", "0", "--crf", "35", "--preset", "4", "--tune", "2",
          "--adaptive-film-grain", "0", "--scd", "1", "--lookahead", "48"]
-audio = { codec = "opus", bitrate = 96 }   # opus | aac-lc | he-aac | he-aac-v2
+audio = { codec = "opus", bitrate = 96 }   # opus | aac-lc | he-aac | he-aac-v2 | xhe-aac
 color = "bt709"                # bt709 | bt601 | source
-crop = "none"                  # none | left,top,right,bottom
+crop = "none"                  # none | auto | left,top,right,bottom
+# source = "vapoursynth"       # run `script` through vspipe instead of ffmpeg
+# script = "scripts/anime.vpy" # macros: %source% %work% %width% %height% %crop_left% ...
 ```
 
 Per episode: ffmpeg decodes the video, scales it with `zscale` (libzimg, the
@@ -251,7 +272,15 @@ library behind VapourSynth's `resize.Spline36`) and pipes 10-bit y4m into
 StaxRip command line; concurrently the `--audio-lang` track is encoded —
 Opus through `opusenc` (ffmpeg `libopus` when absent), AAC through the first
 usable entry of `aac_encoders` (`qaac` needs Apple CoreAudio; `ffmpeg-fdk`
-needs an ffmpeg with `libfdk_aac`; `ffmpeg-aac` is AAC-LC only). Chapters are
+needs an ffmpeg with `libfdk_aac`; `ffmpeg-aac` is AAC-LC only), xHE-AAC
+through `exhale` (WAV first, then `exhale <preset> in.wav out.m4a`; preset
+from the bitrate). `crop = "auto"` runs ffmpeg `cropdetect` on five frames at
+five points of the file before deciding (even values; `none` when nothing
+is cropped). With `source = "vapoursynth"` the profile's `script` is copied
+to the work folder with its macros expanded and `vspipe --container y4m`
+replaces ffmpeg as the y4m producer, so VapourSynth filters (denoise, deband,
+custom crops) work exactly as in StaxRip; the script should keep its index
+cache in `%work%`. Chapters are
 extracted with `mkvextract`, and `mkvmerge` muxes with the source's display
 aspect ratio, the audio delay from `minimum_timestamp`, the matching external
 subtitles and the chapters. The result is checked with `mkvmerge -J` (size,

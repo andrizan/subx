@@ -4,6 +4,7 @@ pub mod encode;
 pub mod extract;
 pub mod fetch;
 pub mod filter;
+pub mod fonts;
 pub mod mux;
 pub mod probe;
 pub mod shift;
@@ -32,5 +33,6 @@ pub async fn dispatch(cli: Cli, cfg: AppConfig) -> Result<()> {
         Commands::Stats(a) => stats::run(a).await,
         Commands::Encode(a) => encode::run(a, &cfg).await,
         Commands::Tools(a) => tools::run(a, &cfg).await,
+        Commands::Fonts(a) => fonts::run(a).await,
     }
 }

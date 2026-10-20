@@ -83,10 +83,14 @@ pub struct Profile {
     /// Target size; 0 keeps the source size.
     pub width: u32,
     pub height: u32,
-    /// `none`, `auto` (cropdetect, phase 5) or `left,top,right,bottom`.
+    /// `none`, `auto` (ffmpeg cropdetect on sampled frames) or `left,top,right,bottom`.
     pub crop: String,
-    /// `ffmpeg` (decode + zscale) or `vapoursynth` (phase 5).
+    /// `ffmpeg` (decode + zscale) or `vapoursynth` (`vspipe` running `script`).
     pub source: String,
+    /// VapourSynth script template for `source = "vapoursynth"`; macros
+    /// `%source%`, `%work%`, `%width%`, `%height%`, `%crop_left%`,
+    /// `%crop_top%`, `%crop_right%`, `%crop_bottom%` are expanded per episode.
+    pub script: Option<PathBuf>,
     /// `svt-av1` or `x265`.
     pub encoder: String,
     /// Encoder arguments copied verbatim from the StaxRip command line.
@@ -116,6 +120,7 @@ impl Default for Profile {
             height: 0,
             crop: "none".to_string(),
             source: "ffmpeg".to_string(),
+            script: None,
             encoder: "svt-av1".to_string(),
             video: Vec::new(),
             audio: AudioSpec::default(),

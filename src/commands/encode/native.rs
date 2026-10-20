@@ -4,7 +4,7 @@
 //! everything with chapters and the source's audio delay, and `mkvmerge -J`
 //! verifies the result. Nothing touches the source file.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -17,7 +17,7 @@ use tokio::io::AsyncReadExt;
 use super::{Episode, check_output, file_name, mkv_info, pick_audio_track, sub_language};
 use crate::common::config::{EncodeConfig, Profile};
 use crate::common::tools::{self, Tool};
-use crate::media::probe;
+use crate::media::{mkv, probe};
 
 /// Audio encoder chosen for a profile's codec, in `[encode] aac_encoders` order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +28,8 @@ pub enum AudioEncoder {
     FfmpegFdk,
     Fdkaac(PathBuf),
     FfmpegAac,
+    /// xHE-AAC (USAC); exhale reads a WAV file, so it runs as a two-step chain.
+    Exhale(PathBuf),
 }
 
 impl AudioEncoder {
@@ -39,6 +41,7 @@ impl AudioEncoder {
             AudioEncoder::FfmpegFdk => "ffmpeg libfdk_aac",
             AudioEncoder::Fdkaac(_) => "fdkaac",
             AudioEncoder::FfmpegAac => "ffmpeg aac",
+            AudioEncoder::Exhale(_) => "exhale",
         }
     }
 
@@ -60,6 +63,8 @@ pub struct Native {
     pub mkvmerge: PathBuf,
     pub mkvextract: PathBuf,
     pub video_encoder: PathBuf,
+    /// Set when the profile's `source` is `vapoursynth`.
+    pub vspipe: Option<PathBuf>,
     pub audio: AudioEncoder,
     pub audio_lang: String,
     pub sub_lang: String,
@@ -80,6 +85,11 @@ pub enum Step {
         consumer: (PathBuf, Vec<String>),
         /// File the consumer writes; its growth feeds the stall watchdog.
         output: PathBuf,
+    },
+    /// Steps that run one after another (decode to a WAV file, then encode it).
+    Chain {
+        name: &'static str,
+        steps: Vec<Step>,
     },
 }
 
@@ -103,7 +113,7 @@ fn render_cmd(program: &Path, args: &[String]) -> String {
 impl Step {
     pub fn name(&self) -> &'static str {
         match self {
-            Step::Run { name, .. } | Step::Pipe { name, .. } => name,
+            Step::Run { name, .. } | Step::Pipe { name, .. } | Step::Chain { name, .. } => name,
         }
     }
 
@@ -118,6 +128,11 @@ impl Step {
                 render_cmd(&producer.0, &producer.1),
                 render_cmd(&consumer.0, &consumer.1)
             ),
+            Step::Chain { steps, .. } => steps
+                .iter()
+                .map(Step::render)
+                .collect::<Vec<_>>()
+                .join(" && "),
         }
     }
 }
@@ -137,15 +152,8 @@ pub struct SourceInfo {
     pub duration_s: f64,
     /// Chapter entries in the source (0 = none); the output must carry the same number.
     pub chapter_entries: u64,
-}
-
-/// Total chapter entries across all editions of a `mkvmerge -J` report.
-fn chapter_entries(info: &Value) -> u64 {
-    info["chapters"].as_array().map_or(0, |c| {
-        c.iter()
-            .map(|e| e["num_entries"].as_u64().unwrap_or(0))
-            .sum()
-    })
+    /// `(left, top, right, bottom)` from cropdetect when the profile says `crop = "auto"`.
+    pub crop: Option<(u32, u32, u32, u32)>,
 }
 
 fn gcd(a: u32, b: u32) -> u32 {
@@ -203,27 +211,129 @@ fn color_args(color: &str) -> Result<(Vec<String>, Vec<String>)> {
     })
 }
 
-/// `left,top,right,bottom` crop or `none`.
-fn crop_filter(spec: &str) -> Result<Option<String>> {
+/// ffmpeg crop filter for the profile's `crop`: `none`, `auto` (the detected
+/// values, if any) or `left,top,right,bottom`.
+fn crop_filter(spec: &str, auto: Option<(u32, u32, u32, u32)>) -> Result<Option<String>> {
     let spec = spec.trim();
     if spec.is_empty() || spec.eq_ignore_ascii_case("none") {
         return Ok(None);
     }
-    if spec.eq_ignore_ascii_case("auto") {
-        bail!("crop = \"auto\" is not implemented yet; use none or left,top,right,bottom");
-    }
-    let v: Vec<u32> = spec
-        .split(',')
-        .map(|n| n.trim().parse::<u32>())
-        .collect::<Result<_, _>>()
-        .with_context(|| format!("crop '{spec}' must be none or left,top,right,bottom"))?;
-    let [l, t, r, b] = v[..] else {
-        bail!("crop '{spec}' must have four values");
+    let (l, t, r, b) = if spec.eq_ignore_ascii_case("auto") {
+        match auto {
+            Some(c) => c,
+            None => return Ok(None),
+        }
+    } else {
+        let v: Vec<u32> = spec
+            .split(',')
+            .map(|n| n.trim().parse::<u32>())
+            .collect::<Result<_, _>>()
+            .with_context(|| {
+                format!("crop '{spec}' must be none, auto or left,top,right,bottom")
+            })?;
+        let [l, t, r, b] = v[..] else {
+            bail!("crop '{spec}' must have four values");
+        };
+        (l, t, r, b)
     };
     if l + t + r + b == 0 {
         return Ok(None);
     }
     Ok(Some(format!("crop=iw-{}:ih-{}:{l}:{t}", l + r, t + b)))
+}
+
+/// Most frequent `crop=W:H:X:Y` rectangle in ffmpeg cropdetect output.
+fn parse_cropdetect(text: &str) -> Option<(u32, u32, u32, u32)> {
+    let mut counts: HashMap<(u32, u32, u32, u32), usize> = HashMap::new();
+    for line in text.lines() {
+        let Some(pos) = line.find("crop=") else {
+            continue;
+        };
+        let spec = line[pos + 5..].split_whitespace().next().unwrap_or("");
+        let v: Vec<u32> = spec.split(':').filter_map(|n| n.parse().ok()).collect();
+        if let [w, h, x, y] = v[..] {
+            *counts.entry((w, h, x, y)).or_insert(0) += 1;
+        }
+    }
+    let mut ranked: Vec<_> = counts.into_iter().collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    ranked.first().map(|(rect, _)| *rect)
+}
+
+/// `(left, top, right, bottom)`, even values, from a detected rectangle.
+fn crop_from_detect(
+    (w, h, x, y): (u32, u32, u32, u32),
+    width: u32,
+    height: u32,
+) -> (u32, u32, u32, u32) {
+    let even = |v: u32| v & !1;
+    (
+        even(x),
+        even(y),
+        even(width.saturating_sub(x + w)),
+        even(height.saturating_sub(y + h)),
+    )
+}
+
+/// Run cropdetect on five frames at five points of the file.
+async fn detect_crop(
+    ffmpeg: &Path,
+    video: &Path,
+    duration_s: f64,
+    width: u32,
+    height: u32,
+) -> Result<Option<(u32, u32, u32, u32)>> {
+    let mut text = String::new();
+    for frac in [0.1, 0.3, 0.5, 0.7, 0.9] {
+        let ss = format!("{:.3}", duration_s.max(0.0) * frac);
+        let out = tokio::process::Command::new(ffmpeg)
+            .args(["-v", "info", "-nostdin", "-ss", &ss, "-i"])
+            .arg(video)
+            .args([
+                "-map",
+                "0:v:0",
+                "-frames:v",
+                "5",
+                "-vf",
+                "cropdetect=limit=24:round=2:reset=1",
+                "-f",
+                "null",
+                "-",
+            ])
+            .stdin(Stdio::null())
+            .output()
+            .await
+            .with_context(|| "cannot run ffmpeg cropdetect")?;
+        text.push_str(&String::from_utf8_lossy(&out.stderr));
+    }
+    Ok(parse_cropdetect(&text)
+        .map(|rect| crop_from_detect(rect, width, height))
+        .filter(|&(l, t, r, b)| l + t + r + b > 0))
+}
+
+/// exhale preset for a target bitrate: presets 0–9 sit roughly 16 kbit/s apart from 48.
+fn exhale_preset(kbps: u32) -> String {
+    ((kbps.saturating_sub(48) + 8) / 16).min(9).to_string()
+}
+
+/// Expand the macros of a VapourSynth script template for one episode.
+fn vapoursynth_script(
+    template: &str,
+    source: &Path,
+    work: &Path,
+    width: u32,
+    height: u32,
+    (l, t, r, b): (u32, u32, u32, u32),
+) -> String {
+    template
+        .replace("%source%", &source.display().to_string())
+        .replace("%work%", &work.display().to_string())
+        .replace("%width%", &width.to_string())
+        .replace("%height%", &height.to_string())
+        .replace("%crop_left%", &l.to_string())
+        .replace("%crop_top%", &t.to_string())
+        .replace("%crop_right%", &r.to_string())
+        .replace("%crop_bottom%", &b.to_string())
 }
 
 /// Encoder names from `ffmpeg -encoders`.
@@ -299,7 +409,18 @@ fn pick_audio_encoder(
                 tried.join(", ")
             );
         }
-        other => bail!("audio codec '{other}' unknown (opus | aac-lc | he-aac | he-aac-v2)"),
+        "xhe-aac" => {
+            if let Some((p, _)) = resolver.locate(Tool::Exhale) {
+                return Ok(AudioEncoder::Exhale(p));
+            }
+            bail!(
+                "no xHE-AAC encoder: exhale not found; get it from {}",
+                Tool::Exhale.link()
+            );
+        }
+        other => {
+            bail!("audio codec '{other}' unknown (opus | aac-lc | he-aac | he-aac-v2 | xhe-aac)")
+        }
     }
 }
 
@@ -322,17 +443,25 @@ impl Native {
                 }
             )
         })?;
-        if profile.source != "ffmpeg" {
-            bail!(
-                "profile source '{}' is not implemented yet (ffmpeg only)",
-                profile.source
-            );
-        }
+        let vspipe = match profile.source.as_str() {
+            "ffmpeg" => None,
+            "vapoursynth" => {
+                let script = profile
+                    .script
+                    .as_ref()
+                    .context("profile source = \"vapoursynth\" needs `script = \"<file>.vpy\"`")?;
+                if !script.is_file() {
+                    bail!("VapourSynth script not found: {}", script.display());
+                }
+                Some(tools::require_one(Tool::Vspipe)?)
+            }
+            other => bail!("profile source '{other}' unknown (ffmpeg | vapoursynth)"),
+        };
         if (profile.width == 0) != (profile.height == 0) {
             bail!("profile width and height must both be set or both be 0");
         }
         color_args(&profile.color)?;
-        crop_filter(&profile.crop)?;
+        crop_filter(&profile.crop, None)?;
         let encoder_tool = match profile.encoder.as_str() {
             "svt-av1" => Tool::SvtAv1,
             "x265" => Tool::X265,
@@ -363,6 +492,7 @@ impl Native {
             mkvmerge,
             mkvextract,
             video_encoder,
+            vspipe,
             audio,
             audio_lang: audio_lang.to_string(),
             sub_lang: sub_lang.to_string(),
@@ -381,9 +511,14 @@ impl Native {
 
     pub fn describe(&self) -> String {
         format!(
-            "engine native, profile {} ({}, {} {} kbps via {}), {}",
+            "engine native, profile {} ({} via {}, {} {} kbps via {}), {}{}",
             self.profile_name,
             self.profile.encoder,
+            if self.vspipe.is_some() {
+                "vapoursynth"
+            } else {
+                "ffmpeg"
+            },
             self.profile.audio.codec,
             self.profile.audio.bitrate,
             self.audio.label(),
@@ -391,16 +526,21 @@ impl Native {
                 "source size".to_string()
             } else {
                 self.resolution()
+            },
+            if self.profile.crop.trim().eq_ignore_ascii_case("auto") {
+                ", auto crop"
+            } else {
+                ""
             }
         )
     }
 
     /// Read what the source needs us to know.
     pub async fn inspect(&self, video: &Path) -> Result<SourceInfo> {
-        let mkv = mkv_info(&self.mkvmerge, video).await?;
-        let audio_track = pick_audio_track(&mkv, &self.audio_lang)
+        let report = mkv_info(&self.mkvmerge, video).await?;
+        let audio_track = pick_audio_track(&report, &self.audio_lang)
             .with_context(|| format!("while reading {}", video.display()))?;
-        let track = mkv["tracks"]
+        let track = report["tracks"]
             .as_array()
             .and_then(|t| t.iter().find(|t| t["id"].as_u64() == Some(audio_track)))
             .cloned()
@@ -412,7 +552,7 @@ impl Native {
         let delay_ms = track["properties"]["minimum_timestamp"]
             .as_i64()
             .map_or(0, |ns| (ns as f64 / 1_000_000.0).round() as i64);
-        let chapter_entries = chapter_entries(&mkv);
+        let chapter_entries = mkv::chapter_entries(&report);
 
         let full = probe::probe_full(&self.ffprobe, video).await?;
         let v = full
@@ -432,6 +572,11 @@ impl Native {
             .as_ref()
             .and_then(|f| probe::val_f64(f.duration.as_ref()))
             .unwrap_or(0.0);
+        let crop = if self.profile.crop.trim().eq_ignore_ascii_case("auto") {
+            detect_crop(&self.ffmpeg, video, duration_s, width, height).await?
+        } else {
+            None
+        };
         Ok(SourceInfo {
             audio_track,
             audio_lang,
@@ -441,6 +586,7 @@ impl Native {
             fps,
             duration_s,
             chapter_entries,
+            crop,
         })
     }
 
@@ -453,37 +599,55 @@ impl Native {
         let source = path(&ep.video);
 
         // --- video -----------------------------------------------------------
-        let mut filters: Vec<String> = Vec::new();
-        if let Some(crop) = crop_filter(&p.crop)? {
-            filters.push(crop);
-        }
-        if p.width > 0 {
-            filters.push(format!(
-                "zscale=w={}:h={}:filter=spline36",
-                p.width, p.height
-            ));
-        }
-        // zscale keeps the display aspect by changing the SAR; the mux sets
-        // the display size instead, exactly as StaxRip does.
-        filters.push(s("setsar=1"));
-        let mut producer = vec![
-            s("-v"),
-            s("error"),
-            s("-nostdin"),
-            s("-i"),
-            source.clone(),
-            s("-map"),
-            s("0:v:0"),
-            s("-vf"),
-            filters.join(","),
-            s("-pix_fmt"),
-            s("yuv420p10le"),
-            s("-f"),
-            s("yuv4mpegpipe"),
-            s("-strict"),
-            s("-1"),
-            s("-"),
-        ];
+        let (producer_exe, producer): (PathBuf, Vec<String>) = match &self.vspipe {
+            // The script (macros expanded per episode) already decodes, crops
+            // and resizes; vspipe hands y4m over exactly like ffmpeg below.
+            Some(vspipe) => (
+                vspipe.clone(),
+                vec![
+                    s("--container"),
+                    s("y4m"),
+                    path(&work.join("source.vpy")),
+                    s("-"),
+                ],
+            ),
+            None => {
+                let mut filters: Vec<String> = Vec::new();
+                if let Some(crop) = crop_filter(&p.crop, src.crop)? {
+                    filters.push(crop);
+                }
+                if p.width > 0 {
+                    filters.push(format!(
+                        "zscale=w={}:h={}:filter=spline36",
+                        p.width, p.height
+                    ));
+                }
+                // zscale keeps the display aspect by changing the SAR; the mux
+                // sets the display size instead, exactly as StaxRip does.
+                filters.push(s("setsar=1"));
+                (
+                    self.ffmpeg.clone(),
+                    vec![
+                        s("-v"),
+                        s("error"),
+                        s("-nostdin"),
+                        s("-i"),
+                        source.clone(),
+                        s("-map"),
+                        s("0:v:0"),
+                        s("-vf"),
+                        filters.join(","),
+                        s("-pix_fmt"),
+                        s("yuv420p10le"),
+                        s("-f"),
+                        s("yuv4mpegpipe"),
+                        s("-strict"),
+                        s("-1"),
+                        s("-"),
+                    ],
+                )
+            }
+        };
         let (svt_color, x265_color) = color_args(&p.color)?;
         let (video_out, mut consumer) = match p.encoder.as_str() {
             "svt-av1" => {
@@ -523,10 +687,9 @@ impl Native {
             }
         };
         consumer.extend(p.video.iter().cloned());
-        producer.shrink_to_fit();
         let video = Step::Pipe {
             name: "video",
-            producer: (self.ffmpeg.clone(), producer),
+            producer: (producer_exe, producer),
             consumer: (self.video_encoder.clone(), consumer),
             output: video_out.clone(),
         };
@@ -662,6 +825,31 @@ impl Native {
                 program: self.ffmpeg.clone(),
                 args: encode_direct(vec![s("-c:a"), s("aac"), s("-b:a"), format!("{kbps}k")]),
             },
+            AudioEncoder::Exhale(exe) => {
+                let wav = work.join("audio.wav");
+                let mut decode_to_wav = encode_direct(vec![s("-c:a"), s("pcm_s24le")]);
+                decode_to_wav.pop();
+                decode_to_wav.push(path(&wav));
+                Step::Chain {
+                    name: "audio",
+                    steps: vec![
+                        Step::Run {
+                            name: "audio",
+                            program: self.ffmpeg.clone(),
+                            args: decode_to_wav,
+                        },
+                        Step::Run {
+                            name: "audio",
+                            program: exe.clone(),
+                            args: vec![
+                                exhale_preset(p.audio.bitrate),
+                                path(&wav),
+                                path(&audio_out),
+                            ],
+                        },
+                    ],
+                }
+            }
         };
 
         // --- chapters + mux --------------------------------------------------
@@ -748,6 +936,12 @@ async fn run_step(step: &Step, stall: Duration, log: &Path, tag: &str) -> Result
         &format!("\n### {} ({tag})\n{}", step.name(), step.render()),
     );
     match step {
+        Step::Chain { steps, .. } => {
+            for inner in steps {
+                Box::pin(run_step(inner, stall, log, tag)).await?;
+            }
+            return Ok(());
+        }
         Step::Run { program, args, .. } => {
             let out = tokio::process::Command::new(program)
                 .args(args)
@@ -894,6 +1088,25 @@ pub async fn encode_one(n: &Native, ep: &Episode, work: &Path) -> Result<()> {
     );
 
     let src = n.inspect(&ep.video).await?;
+    if let Some(template) = n.vspipe.as_ref().and(n.profile.script.as_ref()) {
+        let text = std::fs::read_to_string(template)
+            .with_context(|| format!("cannot read {}", template.display()))?;
+        let (w, h) = if n.profile.width > 0 {
+            (n.profile.width, n.profile.height)
+        } else {
+            (src.width, src.height)
+        };
+        let script = vapoursynth_script(
+            &text,
+            &ep.video,
+            work,
+            w,
+            h,
+            src.crop.unwrap_or((0, 0, 0, 0)),
+        );
+        std::fs::write(work.join("source.vpy"), script)
+            .with_context(|| "cannot write the VapourSynth script")?;
+    }
     let steps = n.steps(ep, &src, work)?;
     let tag = ep.id.to_string();
     let (video, audio, rest) = (&steps[0], &steps[1], &steps[2..]);
@@ -919,7 +1132,7 @@ pub async fn encode_one(n: &Native, ep: &Episode, work: &Path) -> Result<()> {
             ));
         }
     }
-    let got_chapters = chapter_entries(&info);
+    let got_chapters = mkv::chapter_entries(&info);
     if got_chapters != src.chapter_entries {
         problems.push(format!(
             "chapters={got_chapters} (source {})",
@@ -940,7 +1153,7 @@ pub async fn dry_run(n: &Native, plan: &[Episode], work_root: &Path) -> Result<(
         let work = work_root.join(ep.id.key());
         let src = n.inspect(&ep.video).await?;
         println!(
-            "\n[{}] audio track {} ({}, +{} ms), {}x{} @ {} fps, chapters: {}",
+            "\n[{}] audio track {} ({}, +{} ms), {}x{} @ {} fps, chapters: {}, crop: {}",
             ep.id,
             src.audio_track,
             src.audio_lang,
@@ -948,8 +1161,19 @@ pub async fn dry_run(n: &Native, plan: &[Episode], work_root: &Path) -> Result<(
             src.width,
             src.height,
             src.fps,
-            src.chapter_entries
+            src.chapter_entries,
+            src.crop.map_or("none".to_string(), |(l, t, r, b)| format!(
+                "{l},{t},{r},{b}"
+            ))
         );
+        if let Some(script) = n.vspipe.as_ref().and(n.profile.script.as_ref()) {
+            println!(
+                "[{}] script: {} -> {} (macros expanded at encode time)",
+                ep.id,
+                script.display(),
+                work.join("source.vpy").display()
+            );
+        }
         for step in n.steps(ep, &src, &work)? {
             println!("[{}] {}: {}", ep.id, step.name(), step.render());
         }
@@ -1193,6 +1417,7 @@ mod tests {
                 height: 480,
                 crop: "none".into(),
                 source: "ffmpeg".into(),
+                script: None,
                 encoder: encoder.into(),
                 video: vec!["--preset".into(), "4".into(), "--crf".into(), "35".into()],
                 audio: AudioSpec {
@@ -1207,6 +1432,7 @@ mod tests {
             mkvmerge: "mkvmerge".into(),
             mkvextract: "mkvextract".into(),
             video_encoder: encoder.into(),
+            vspipe: None,
             audio,
             audio_lang: "jpn".into(),
             sub_lang: "id".into(),
@@ -1233,6 +1459,7 @@ mod tests {
             fps: "24000/1001".into(),
             duration_s: 1422.0,
             chapter_entries: 6,
+            crop: None,
         }
     }
 
@@ -1240,17 +1467,82 @@ mod tests {
     fn helpers() {
         assert_eq!(dar(1920, 1080), "16/9");
         assert_eq!(dar(848, 480), "53/30");
-        assert_eq!(crop_filter("none").unwrap(), None);
-        assert_eq!(crop_filter("0,0,0,0").unwrap(), None);
+        assert_eq!(crop_filter("none", None).unwrap(), None);
+        assert_eq!(crop_filter("0,0,0,0", None).unwrap(), None);
         assert_eq!(
-            crop_filter("0,140,0,140").unwrap().as_deref(),
+            crop_filter("0,140,0,140", None).unwrap().as_deref(),
             Some("crop=iw-0:ih-280:0:140")
         );
-        assert!(crop_filter("auto").is_err());
-        assert!(crop_filter("1,2").is_err());
+        assert_eq!(crop_filter("auto", None).unwrap(), None);
+        assert_eq!(
+            crop_filter("auto", Some((0, 138, 0, 138)))
+                .unwrap()
+                .as_deref(),
+            Some("crop=iw-0:ih-276:0:138")
+        );
+        assert!(crop_filter("1,2", None).is_err());
         assert!(color_args("weird").is_err());
         assert_eq!(quote("a b"), "\"a b\"");
         assert_eq!(quote("plain"), "plain");
+    }
+
+    #[test]
+    fn auto_crop_parsing_and_exhale_presets() {
+        let text = "[Parsed_cropdetect_0 @ 0x1] x1:0 x2:1919 y1:138 y2:941 w:1920 h:804 x:0 y:138 pts:1 t:0.04 crop=1920:804:0:138\n\
+                    [Parsed_cropdetect_0 @ 0x1] x1:0 x2:1919 y1:138 y2:941 w:1920 h:804 x:0 y:138 pts:2 t:0.08 crop=1920:804:0:138\n\
+                    [Parsed_cropdetect_0 @ 0x1] x1:0 x2:1919 y1:0 y2:1079 w:1920 h:1080 x:0 y:0 pts:3 t:0.12 crop=1920:1080:0:0\n";
+        assert_eq!(parse_cropdetect(text), Some((1920, 804, 0, 138)));
+        assert_eq!(parse_cropdetect("frame=   10 fps=0.0"), None);
+        assert_eq!(
+            crop_from_detect((1920, 804, 0, 138), 1920, 1080),
+            (0, 138, 0, 138)
+        );
+        assert_eq!(
+            crop_from_detect((1918, 1080, 1, 0), 1920, 1080),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(exhale_preset(48), "0");
+        assert_eq!(exhale_preset(96), "3");
+        assert_eq!(exhale_preset(192), "9");
+        assert_eq!(exhale_preset(500), "9");
+    }
+
+    #[test]
+    fn vapoursynth_source_uses_vspipe_and_expands_macros() {
+        let mut n = native("svt-av1", AudioEncoder::FfmpegLibopus, "opus");
+        n.vspipe = Some("vspipe".into());
+        n.profile.source = "vapoursynth".into();
+        n.profile.script = Some("tpl.vpy".into());
+        let steps = n.steps(&episode(), &source(), Path::new("W")).unwrap();
+        let video = steps[0].render();
+        assert!(video.starts_with("vspipe --container y4m "), "{video}");
+        assert!(video.contains("source.vpy - | svt-av1 -i - "), "{video}");
+        assert!(n.describe().contains("svt-av1 via vapoursynth"));
+
+        let script = vapoursynth_script(
+            "clip = Source(r\"%source%\", cachefile=r\"%work%/i\")\nclip = Spline36(clip, %width%, %height%)\n# %crop_left%,%crop_top%,%crop_right%,%crop_bottom%",
+            Path::new("S/ep.mkv"),
+            Path::new("W"),
+            848,
+            480,
+            (0, 2, 0, 4),
+        );
+        assert_eq!(
+            script,
+            "clip = Source(r\"S/ep.mkv\", cachefile=r\"W/i\")\nclip = Spline36(clip, 848, 480)\n# 0,2,0,4"
+        );
+    }
+
+    #[test]
+    fn exhale_runs_as_a_chain() {
+        let n = native("x265", AudioEncoder::Exhale("exhale".into()), "xhe-aac");
+        let steps = n.steps(&episode(), &source(), Path::new("W")).unwrap();
+        let audio = steps[1].render();
+        assert!(
+            audio.contains("-c:a pcm_s24le ") && audio.contains(" && exhale 3 "),
+            "{audio}"
+        );
+        assert!(matches!(&steps[1], Step::Chain { steps, .. } if steps.len() == 2));
     }
 
     #[test]

@@ -3,6 +3,7 @@ pub mod batch;
 pub mod clean;
 pub mod convert;
 pub mod filter;
+pub mod fonts;
 pub mod shift;
 pub mod srt;
 pub mod stats;

@@ -4,7 +4,7 @@ All-in-one fansub toolkit in a single Rust binary: extract subtitles/audio from
 video, clean and retime them, translate via LibreTranslate or any
 OpenAI-compatible AI model, QC the result, and mux it back.
 
-Status: **complete** — 93 unit + 8 end-to-end tests, `clippy --all-targets -D warnings` clean.
+Status: **complete** — 102 unit + 9 end-to-end tests, `clippy --all-targets -D warnings` clean.
 
 ## Requirements
 
@@ -32,7 +32,8 @@ Shortcuts: `make build-release`, `make check`, `make run ARGS="..."`.
 
 | Command | What it does |
 |---|---|
-| `extract` | Subtitles (+ optional `--audio`) out of MKV/MP4 into `subs/` + `audio/` |
+| `extract` | Subtitles (+ optional `--audio`, `--fonts`, `--chapters`) out of MKV/MP4 into `subs/`, `audio/`, `fonts/`, `chapters/` |
+| `fonts` | Which fonts the ASS scripts need, and whether each is attached, installed or missing |
 | `clean` | Scrub ASS junk, keep karaoke, normalize the font (`-r` for `subs/<lang>/`) |
 | `shift` | Shift timestamps ±ms, drop empty events (file or folder, in-place safe) |
 | `filter` | Delete lines matching keywords (regex, dry-run supported) |

@@ -31,6 +31,7 @@ pub enum Tool {
     Qaac,
     Opusenc,
     Fdkaac,
+    Exhale,
     Vspipe,
     YtDlp,
 }
@@ -102,7 +103,7 @@ const YTDLP_VERSION: &str = "2026.08.19";
 const MKVTOOLNIX_VERSION: &str = "103.0";
 
 impl Tool {
-    pub const ALL: [Tool; 11] = [
+    pub const ALL: [Tool; 12] = [
         Tool::Ffmpeg,
         Tool::Ffprobe,
         Tool::Mkvmerge,
@@ -112,6 +113,7 @@ impl Tool {
         Tool::Qaac,
         Tool::Opusenc,
         Tool::Fdkaac,
+        Tool::Exhale,
         Tool::Vspipe,
         Tool::YtDlp,
     ];
@@ -128,6 +130,7 @@ impl Tool {
             Tool::Qaac => "qaac",
             Tool::Opusenc => "opusenc",
             Tool::Fdkaac => "fdkaac",
+            Tool::Exhale => "exhale",
             Tool::Vspipe => "vspipe",
             Tool::YtDlp => "yt-dlp",
         }
@@ -151,6 +154,7 @@ impl Tool {
             Tool::Qaac => "qaac",
             Tool::Opusenc => "opusenc",
             Tool::Fdkaac => "fdkaac",
+            Tool::Exhale => "exhale",
             Tool::Vspipe => "vspipe",
             Tool::YtDlp => "yt-dlp",
         }
@@ -175,6 +179,7 @@ impl Tool {
             Tool::Qaac => "qaac",
             Tool::Opusenc => "opusenc",
             Tool::Fdkaac => "fdkaac",
+            Tool::Exhale => "exhale",
             Tool::Vspipe => "vapoursynth",
             Tool::YtDlp => "yt-dlp",
         }
@@ -200,6 +205,7 @@ impl Tool {
             Tool::Qaac => "Audio/qaac",
             Tool::Opusenc => "Audio/opus",
             Tool::Fdkaac => "Audio/fdkaac",
+            Tool::Exhale => "Audio/exhale",
             Tool::Vspipe => "FrameServer/VapourSynth",
             Tool::YtDlp => "Support",
         }
@@ -216,6 +222,7 @@ impl Tool {
             Tool::Qaac => "AAC-LC / HE-AAC audio (Apple encoder)",
             Tool::Opusenc => "Opus audio (exact StaxRip chain; ffmpeg libopus otherwise)",
             Tool::Fdkaac => "AAC-LC / HE-AAC / HE-AACv2 audio (libfdk-aac CLI)",
+            Tool::Exhale => "xHE-AAC (USAC) audio",
             Tool::Vspipe => "VapourSynth script source",
             Tool::YtDlp => "subtitle download (fetch)",
         }
@@ -231,6 +238,7 @@ impl Tool {
             Tool::Qaac => "https://github.com/nu774/qaac/releases",
             Tool::Opusenc => "https://opus-codec.org/downloads/",
             Tool::Fdkaac => "https://github.com/nu774/fdkaac",
+            Tool::Exhale => "https://gitlab.com/ecodis/exhale/-/releases",
             Tool::Vspipe => "https://github.com/vapoursynth/vapoursynth/releases",
             Tool::YtDlp => "https://github.com/yt-dlp/yt-dlp/releases",
         }

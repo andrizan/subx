@@ -3,9 +3,11 @@
 Status: phases 0 (CI and releases), 1 (quick wins), 2 (tools module),
 3 (episode identity) and 4 (native encode: `--engine native`, profiles, SVT-AV1
 and x265, Opus and the AAC chain, `-j`, stall watchdog, per-episode logs; the
-AV1+Opus reference episode reproduces StaxRip's output bit for bit) and
-6 (parity test, `native` is the default engine, StaxRip stays available as
-`--engine staxrip`) are implemented; phases 5 and 7 are pending. The current `encode` command drives StaxRip through its
+AV1+Opus reference episode reproduces StaxRip's output bit for bit), 5
+(`extract --fonts/--chapters`, the `fonts` command, `source = "vapoursynth"`,
+`crop = "auto"`, xHE-AAC via exhale) and 6 (parity test, `native` is the
+default engine, StaxRip stays available as `--engine staxrip`) are
+implemented; only the optional phase 7 is open. The current `encode` command drives StaxRip through its
 command line; this document describes the target architecture that removes
 that dependency while keeping the output equivalent, and the roadmap to get
 there. `AGENTS.md` conventions apply throughout.
@@ -79,7 +81,8 @@ Module layout (new or changed):
 | `common/episode.rs` | `EpisodeId` parser shared by `extract`, `mux`, `encode`, `subs/batch` |
 | `common/profile.rs` | `[encode.profiles.*]` schema, macro expansion, validation |
 | `common/procs.rs` | spawn with pipes, line-based progress parsing, timeout + kill tree |
-| `media/mkv.rs` | typed view over `mkvmerge -J` (tracks, `minimum_timestamp`, chapters, attachments) |
+| `media/mkv.rs` | `mkvmerge -J` access: report, chapter entry count, font attachments |
+| `subs/fonts.rs` + `commands/fonts.rs` | fonts an ASS script references (`Style:` + `\fn`), names inside TTF/OTF/TTC files, the `fonts` report |
 | `commands/tools.rs` | `subx tools check \| install \| where` |
 | `commands/encode.rs` + `encode/native.rs` | plan, StaxRip engine and verification in `encode.rs`; the native pipeline (steps, pipes, watchdog, audio chain, mux) in `native.rs` |
 
@@ -404,6 +407,10 @@ engine's video and audio streams have the **same MD5** as StaxRip's output
 job took 115 s against StaxRip's 113 s plus its demux/index/startup overhead.
 Same decoder, same zimg resize, same encoder parameters give the same bits;
 the SSIM threshold only matters once a profile deviates from the template.
+The `source = "vapoursynth"` backend (vspipe running a resize-only script
+with the same ffms2 + Spline36 chain) produced the same video MD5 again in
+113 s, and `crop = "auto"` reported no crop on the reference episode, matching
+StaxRip's AutoCrop.
 
 ## Crate changes
 
