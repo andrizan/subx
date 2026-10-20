@@ -94,7 +94,9 @@ pub struct Found {
     pub detail: Option<String>,
 }
 
-const FFMPEG_VERSION: &str = "9.0.2";
+/// ffmpeg release branch: BtbN publishes `ffmpeg-n<branch>-latest-*` with the
+/// newest patch of that line, so this pins the major.minor without going stale.
+const FFMPEG_BRANCH: &str = "9.0";
 const YTDLP_VERSION: &str = "2026.08.19";
 const MKVTOOLNIX_VERSION: &str = "103.0";
 
@@ -240,36 +242,24 @@ impl Tool {
         let arch = std::env::consts::ARCH;
         let win_x64 = os == "windows" && arch == "x86_64";
         match self.install_target() {
-            Tool::Ffmpeg if win_x64 => {
-                // Release build linked from ffmpeg.org; "full" carries zscale,
-                // libsvtav1, libopus and libx265.
-                let url = format!(
-                    "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-{FFMPEG_VERSION}-full_build.7z"
-                );
-                Some(Source {
-                    checksum: Checksum::File(format!("{url}.sha256")),
-                    url,
-                    archive: Archive::SevenZ,
-                    note: Some("gyan.dev release build (ffmpeg.org's Windows link)"),
-                })
-            }
             Tool::Ffmpeg => {
-                // No gyan.dev build for these targets: BtbN's rolling builds,
-                // also linked from ffmpeg.org, with the same library set.
+                // BtbN builds (linked from ffmpeg.org), GPL static: zscale,
+                // libsvtav1, libopus, libx265. Release-branch asset, not master.
                 const BASE: &str = "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/";
-                let (asset, archive) = match (os, arch) {
-                    ("windows", "aarch64") => ("ffmpeg-master-latest-winarm64-gpl.zip", Archive::Zip),
-                    ("linux", "x86_64") => ("ffmpeg-master-latest-linux64-gpl.tar.xz", Archive::TarXz),
-                    ("linux", "aarch64") => {
-                        ("ffmpeg-master-latest-linuxarm64-gpl.tar.xz", Archive::TarXz)
-                    }
+                let (platform, ext, archive) = match (os, arch) {
+                    ("windows", "x86_64") => ("win64", "zip", Archive::Zip),
+                    ("windows", "aarch64") => ("winarm64", "zip", Archive::Zip),
+                    ("linux", "x86_64") => ("linux64", "tar.xz", Archive::TarXz),
+                    ("linux", "aarch64") => ("linuxarm64", "tar.xz", Archive::TarXz),
                     _ => return None,
                 };
                 Some(Source {
-                    url: format!("{BASE}{asset}"),
+                    url: format!(
+                        "{BASE}ffmpeg-n{FFMPEG_BRANCH}-latest-{platform}-gpl-{FFMPEG_BRANCH}.{ext}"
+                    ),
                     archive,
                     checksum: Checksum::File(format!("{BASE}checksums.sha256")),
-                    note: Some("BtbN rolling build linked from ffmpeg.org; has zscale, libsvtav1, libopus, libx265"),
+                    note: Some("BtbN release-branch build linked from ffmpeg.org; has zscale, libsvtav1, libopus, libx265"),
                 })
             }
             Tool::Mkvmerge if win_x64 => {
