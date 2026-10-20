@@ -44,4 +44,6 @@ pub enum Commands {
     Fetch(crate::commands::fetch::FetchArgs),
     /// QC stats: reading speed, durations, overlaps.
     Stats(crate::commands::stats::StatsArgs),
+    /// Batch-encode a folder through a StaxRip template (JP audio, external subs).
+    Encode(crate::commands::encode::EncodeArgs),
 }

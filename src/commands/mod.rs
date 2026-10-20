@@ -1,5 +1,6 @@
 pub mod clean;
 pub mod convert;
+pub mod encode;
 pub mod extract;
 pub mod fetch;
 pub mod filter;
@@ -26,5 +27,6 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Commands::Probe(a) => probe::run(a).await,
         Commands::Fetch(a) => fetch::run(a).await,
         Commands::Stats(a) => stats::run(a).await,
+        Commands::Encode(a) => encode::run(a).await,
     }
 }

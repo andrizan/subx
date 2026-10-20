@@ -4,7 +4,7 @@ All-in-one fansub toolkit in a single Rust binary: extract subtitles/audio from
 video, clean and retime them, translate via LibreTranslate or any
 OpenAI-compatible AI model, QC the result, and mux it back.
 
-Status: **complete** — 61 unit + 5 end-to-end tests, `clippy -D warnings` clean.
+Status: **complete** — 72 unit + 5 end-to-end tests, `clippy -D warnings` clean.
 
 ## Requirements
 
@@ -13,6 +13,7 @@ Status: **complete** — 61 unit + 5 end-to-end tests, `clippy -D warnings` clea
 | `ffmpeg` + `ffprobe` | everything media-related | `winget install ffmpeg` / `scoop install ffmpeg` |
 | `yt-dlp` (optional) | `fetch` | `winget install yt-dlp` |
 | LibreTranslate server **or** AI API key (optional) | `translate` | `docker run -p 5000:5000 libretranslate/libretranslate` or set `OPENROUTER_API_KEY` |
+| StaxRip (Windows, optional; ships its own MKVToolNix) | `encode` | portable zip, point `--staxrip-dir` at it |
 
 `ffmpeg`/`ffprobe` are picked up next to `subx.exe` first, then from `PATH`.
 
@@ -39,6 +40,7 @@ Shortcuts: `make build-release`, `make check`, `make run ARGS="..."`.
 | `probe` | Full media metadata: format, streams, chapters, tags (`--json` for scripts) |
 | `fetch` | Download subtitles via `yt-dlp` |
 | `stats` | QC report: reading speed (CPS), durations, overlaps |
+| `encode` | Batch-encode a folder through a StaxRip template: JP audio only, no embedded subs/fonts, matching external subs added |
 
 ```powershell
 subx --help

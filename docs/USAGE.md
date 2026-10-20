@@ -169,6 +169,41 @@ subx stats <IN> [--cps 20] [--json]
 Reports per file: event count, min/max durations, average/max reading speed
 (CPS on visible text), lines over the limit, and overlapping cues.
 
+### `encode` — batch-encode through StaxRip
+
+```
+subx encode <SOURCE> <DEST> [--template NAME] [--only 10-13] [--resolution 848x480]
+              [--prefix "[ASUT]"] [--series S] [--tag "BD 480p AV1.Opus"]
+              [--sub-lang id] [--audio-lang jpn] [--staxrip-dir DIR]
+              [--work-dir DIR] [--timeout-min 120] [--dry-run] [--allow-running]
+```
+
+Windows only; needs StaxRip (its bundled MKVToolNix is used too). For every video
+in `<SOURCE>`:
+
+1. Makes a work copy with mkvmerge: no embedded subtitles or fonts, only the
+   `--audio-lang` track (video, chapters and timing untouched).
+2. Runs StaxRip through its command line: load `--template`, load the work copy,
+   lock the target size, add the external `.ass/.ssa/.srt` files from `<SOURCE>`
+   whose episode number matches (language from `<name>.id.ass`, first one default),
+   set the target file, encode, exit.
+3. Verifies the result with mkvmerge (size, one audio track in `--audio-lang`,
+   subtitle count, no fonts); the work copy is deleted only when that passes.
+
+- Output name: `<prefix> <series> - <NN or OVA N> (<tag>).mkv` in `<DEST>`;
+  `--series` defaults to the source folder name. Episodes whose output already
+  exists are skipped (delete the file to redo one).
+- Episode numbers come from file names (`- 09`, `S01E09`, `EP9`, `OVA 2`, or the
+  last standalone number). `--only` takes comma-separated episodes and ranges:
+  `--only 5,8-10,OVA 1-3`.
+- `--template` ignores case and punctuation (`Anime480p.AV1.Opus96` finds
+  `Anime-480p.AV1.Opus96`). `--resolution` is passed to StaxRip because the
+  template derives the height from the aspect ratio (848 → 476); an empty value
+  keeps the template's size.
+- Refuses to start while StaxRip is running (`Jobs.dat`/`Settings.dat` are shared)
+  unless `--allow-running`. `--dry-run` prints the plan and the StaxRip command
+  lines without touching anything.
+
 ## Configuration
 
 Optional `subx.toml` (next to the binary, or `--config`); CLI flags always win.
@@ -228,5 +263,8 @@ token estimates first.
 | `AI provider rejected the key (401)` | wrong/expired key (masked in the message, never printed) |
 | `AI returned N lines, expected M` | model broke numbering — retry, or lower `--batch` |
 | `yt-dlp not found` | `winget install yt-dlp` |
+| `encode`: `Not found: ...StaxRip.exe` | pass `--staxrip-dir` (default `D:\Apps\Fansub\StaxRip`) |
+| `encode`: `StaxRip is still running` | finish/close StaxRip first, or `--allow-running` |
+| `encode`: `Output does not match: resolution=...` | the template's size won; check `--resolution` and the StaxRip log in `Settings\Log Files` |
 | `clean` skipped `subs/en/` | add `-r` to recurse into language subfolders |
 | mojibake input | files are read as UTF-8; convert legacy encodings first (planned: auto-detect) |
