@@ -319,8 +319,7 @@ mod tests {
         }
         assert!(ok, "ffmpeg could not mux the sample MKV");
 
-        let (_ffmpeg, ffprobe) =
-            crate::common::ffmpeg_find::find_ffmpeg().expect("ffprobe missing");
+        let (_ffmpeg, ffprobe) = crate::common::tools::ffmpeg_pair().expect("ffprobe missing");
         let streams = probe_streams(&ffprobe, &mkv).await.unwrap();
         let subs: Vec<_> = streams.iter().filter(|s| s.is_subtitle()).collect();
         assert_eq!(subs.len(), 2);

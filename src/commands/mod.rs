@@ -8,6 +8,7 @@ pub mod mux;
 pub mod probe;
 pub mod shift;
 pub mod stats;
+pub mod tools;
 pub mod translate;
 
 use anyhow::Result;
@@ -30,5 +31,6 @@ pub async fn dispatch(cli: Cli, cfg: AppConfig) -> Result<()> {
         Commands::Fetch(a) => fetch::run(a).await,
         Commands::Stats(a) => stats::run(a).await,
         Commands::Encode(a) => encode::run(a, &cfg).await,
+        Commands::Tools(a) => tools::run(a, &cfg).await,
     }
 }

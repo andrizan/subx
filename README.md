@@ -4,7 +4,7 @@ All-in-one fansub toolkit in a single Rust binary: extract subtitles/audio from
 video, clean and retime them, translate via LibreTranslate or any
 OpenAI-compatible AI model, QC the result, and mux it back.
 
-Status: **complete** — 73 unit + 5 end-to-end tests, `clippy --all-targets -D warnings` clean.
+Status: **complete** — 83 unit + 7 end-to-end tests, `clippy --all-targets -D warnings` clean.
 
 ## Requirements
 
@@ -15,7 +15,9 @@ Status: **complete** — 73 unit + 5 end-to-end tests, `clippy --all-targets -D 
 | LibreTranslate server **or** AI API key (optional) | `translate` | `docker run -p 5000:5000 libretranslate/libretranslate` or set `OPENROUTER_API_KEY` |
 | StaxRip (Windows, optional; ships its own MKVToolNix) | `encode` | portable zip, point `--staxrip-dir` at it |
 
-`ffmpeg`/`ffprobe` are picked up next to `subx.exe` first, then from `PATH`.
+`subx tools check` shows what is found (`tools/` next to `subx`, a StaxRip
+bundle via `[tools] staxrip_dir`, then `PATH`); `subx tools install all` fetches
+the installable ones from their official channels with checksum verification.
 
 ## Install
 
@@ -41,6 +43,7 @@ Shortcuts: `make build-release`, `make check`, `make run ARGS="..."`.
 | `fetch` | Download subtitles via `yt-dlp` |
 | `stats` | QC report: reading speed (CPS), durations, overlaps |
 | `encode` | Batch-encode a folder through a StaxRip template: JP audio only, no embedded subs/fonts, matching external subs added |
+| `tools` | Check, locate or install the external binaries (ffmpeg, MKVToolNix, SVT-AV1, x265, qaac, yt-dlp, ...) |
 
 ```powershell
 subx --help

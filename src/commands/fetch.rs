@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::Args;
 
+use crate::common::tools::{self, Tool};
+
 /// `subx fetch <URL>` — download subtitles via yt-dlp.
 #[derive(Debug, Args)]
 pub struct FetchArgs {
@@ -21,12 +23,6 @@ pub struct FetchArgs {
     /// Subtitle format preference (yt-dlp `--sub-format`).
     #[arg(long, default_value = "srt/ass")]
     pub format: String,
-}
-
-fn find_ytdlp() -> Result<PathBuf> {
-    which::which("yt-dlp").context(
-        "yt-dlp not found on PATH. Install via `winget install yt-dlp` / `scoop install yt-dlp` or `pip install yt-dlp`",
-    )
 }
 
 fn build_args(url: &str, lang: &str, format: &str, out: &Path) -> Vec<OsString> {
@@ -54,7 +50,7 @@ fn build_args(url: &str, lang: &str, format: &str, out: &Path) -> Vec<OsString> 
 }
 
 pub async fn run(args: FetchArgs) -> Result<()> {
-    let ytdlp = find_ytdlp()?;
+    let ytdlp = tools::require_one(Tool::YtDlp)?;
     std::fs::create_dir_all(&args.out)
         .with_context(|| format!("cannot create {}", args.out.display()))?;
     println!("Downloading '{}' subtitles for {}", args.lang, args.url);

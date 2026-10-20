@@ -34,7 +34,11 @@ pub struct AppConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ToolsConfig {
-    /// Folder containing `StaxRip.exe` (required by `encode`).
+    /// Where `subx tools install` puts binaries and the first place they are
+    /// looked up (default: `tools/` next to the executable).
+    pub dir: Option<PathBuf>,
+    /// Folder containing `StaxRip.exe` (required by `encode`); its `Apps` tree
+    /// is also searched for every other tool.
     pub staxrip_dir: Option<PathBuf>,
 }
 

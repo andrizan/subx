@@ -46,4 +46,6 @@ pub enum Commands {
     Stats(crate::commands::stats::StatsArgs),
     /// Batch-encode a folder through a StaxRip template (JP audio, external subs).
     Encode(crate::commands::encode::EncodeArgs),
+    /// Check, locate or install the external tools (ffmpeg, mkvmerge, encoders, ...).
+    Tools(crate::commands::tools::ToolsArgs),
 }

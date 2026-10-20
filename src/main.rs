@@ -17,6 +17,16 @@ async fn main() -> Result<()> {
     // Best-effort config load (missing files => defaults).
     let cfg = common::config::AppConfig::load(cli.config.as_deref());
     tracing::debug!(?cfg, "config loaded");
+    common::tools::init(&cfg.tools);
 
-    commands::dispatch(cli, cfg).await
+    if let Err(err) = commands::dispatch(cli, cfg).await {
+        // Missing external tools get their own exit code so scripts can tell
+        // "install something" apart from a failed job.
+        if err.downcast_ref::<common::tools::Missing>().is_some() {
+            eprintln!("Error: {err}");
+            std::process::exit(3);
+        }
+        return Err(err);
+    }
+    Ok(())
 }

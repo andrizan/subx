@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use clap::Args;
 use tokio::sync::Semaphore;
 
-use crate::common::{ffmpeg_find, fs, lang};
+use crate::common::{fs, lang, tools};
 use crate::media::probe;
 
 /// `subx extract <FOLDER>` — extract subtitles (and optionally audio).
@@ -176,7 +176,7 @@ async fn extract_track(
 }
 
 pub async fn run(args: ExtractArgs) -> Result<()> {
-    let (ffmpeg, ffprobe) = ffmpeg_find::find_ffmpeg()?;
+    let (ffmpeg, ffprobe) = tools::ffmpeg_pair()?;
 
     if !args.folder.is_dir() {
         anyhow::bail!("Folder not found: {}", args.folder.display());

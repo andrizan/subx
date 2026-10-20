@@ -211,6 +211,30 @@ given one way or the other. For every video in `<SOURCE>`:
   unless `--allow-running`. `--dry-run` prints the plan and the StaxRip command
   lines without touching anything.
 
+### `tools` — external binaries
+
+```
+subx tools check
+subx tools install <name>... | all [--no-verify] [--tools-dir DIR]
+subx tools where <name>
+```
+
+Every command that needs an external program resolves it in this order:
+`[tools] dir` → `tools/<name>/` next to `subx` → the `Apps` tree of
+`[tools] staxrip_dir` (an existing StaxRip bundle) → `PATH`. A missing tool
+stops the command before any work starts, with exit code `3`, the official
+download link and the `tools install` line when one applies.
+
+`tools check` prints status, version and location for ffmpeg, ffprobe,
+mkvmerge, mkvextract, svt-av1, x265, qaac, opusenc, vspipe and yt-dlp
+(qaac is reported *unusable* when Apple CoreAudio is not installed).
+`tools install` downloads from the projects' official channels — or, for
+SVT-AV1 and x265, the Patman releases StaxRip itself ships — verifies the
+publisher's SHA-256 when one exists (otherwise the downloaded hash is printed),
+unpacks `.zip`/`.7z` (`.tar.xz` through the system `tar` on Linux), and
+re-probes the binary. Nothing is forked, rebuilt or mirrored. VapourSynth is
+link-only (it needs Python and plugins; point `[tools] staxrip_dir` at a bundle).
+
 ## Configuration
 
 Optional `subx.toml` (next to the binary and in the current directory, or one
@@ -229,7 +253,8 @@ so secrets and machine paths belong there.
 | `ai_base_url` | `"https://api.openai.com/v1"` | OpenAI-compatible endpoint |
 | `ai_model` | `"gpt-4o-mini"` | default AI model |
 | `ai_api_key` | — | AI key (prefer env, see below) |
-| `[tools] staxrip_dir` | — | folder with `StaxRip.exe` (required by `encode`) |
+| `[tools] dir` | `tools/` next to `subx` | install root and first lookup location for external tools |
+| `[tools] staxrip_dir` | — | folder with `StaxRip.exe` (required by `encode`); its `Apps` tree is searched for every tool |
 | `[encode] template` | — | StaxRip template name (required by `encode`) |
 | `[encode] prefix` / `tag` | `""` | output name prefix and parenthesized tag |
 | `[encode] resolution` | `""` | `WIDTHxHEIGHT` locked in StaxRip; empty keeps the template's size |
@@ -272,7 +297,7 @@ token estimates first.
 
 | Symptom | Cause / fix |
 |---|---|
-| `ffmpeg not found` | install it (`winget`/`scoop`) or drop `ffmpeg.exe`+`ffprobe.exe` next to `subx.exe` |
+| `missing external tool(s)` (exit 3) | `subx tools check`, then `subx tools install <name>` or follow the printed link; `[tools] staxrip_dir` reuses a StaxRip bundle |
 | `No subtitles found` | file truly has none, or only image subs (copied as `.sup`, not translatable) |
 | `LibreTranslate HTTP …` / connection refused | server not running — start docker above or fix `--url` |
 | `AI provider rejected the key (401)` | wrong/expired key (masked in the message, never printed) |

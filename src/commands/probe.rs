@@ -18,7 +18,7 @@ pub struct ProbeArgs {
 }
 
 pub async fn run(args: ProbeArgs) -> Result<()> {
-    let (_ffmpeg, ffprobe) = crate::common::ffmpeg_find::find_ffmpeg()?;
+    let (_ffmpeg, ffprobe) = crate::common::tools::ffmpeg_pair()?;
     let info = probe::probe_full(&ffprobe, &args.file).await?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&info)?);

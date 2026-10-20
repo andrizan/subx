@@ -1,7 +1,7 @@
 # subx 2 — Design: native fansub pipeline
 
-Status: phases 0 (CI and releases) and 1 (quick wins) are implemented; phases
-2–7 are pending. The current `encode` command drives StaxRip through its
+Status: phases 0 (CI and releases), 1 (quick wins) and 2 (tools module) are
+implemented; phases 3–7 are pending. The current `encode` command drives StaxRip through its
 command line; this document describes the target architecture that removes
 that dependency while keeping the output equivalent, and the roadmap to get
 there. `AGENTS.md` conventions apply throughout.
@@ -100,7 +100,7 @@ Resolution order for every tool, first hit wins:
 
 | Tool | Needed by | Status | Pinned source (verified 2026-10-20) | Integrity |
 |---|---|---|---|---|
-| `ffmpeg`, `ffprobe` | everything | required, installable | BtbN `FFmpeg-Builds` (the builds ffmpeg.org links for Windows and Linux): `releases/latest/download/ffmpeg-master-latest-{win64,winarm64,linux64,linuxarm64}-gpl.{zip,tar.xz}` — has `zscale`, `libsvtav1`, `libopus`, `libx265` | publisher `.sha256` |
+| `ffmpeg`, `ffprobe` | everything | required, installable | Windows x64: gyan.dev release build linked from ffmpeg.org, `gyan.dev/ffmpeg/builds/packages/ffmpeg-<ver>-full_build.7z` (9.0.2 at time of writing; has `zscale`, `libsvtav1`, `libopus`, `libx265`). Windows arm64 and Linux: BtbN `FFmpeg-Builds` `ffmpeg-master-latest-{winarm64,linux64,linuxarm64}-gpl.{zip,tar.xz}` | publisher `.sha256` / `checksums.sha256` |
 | `mkvmerge`, `mkvextract`, `mkvpropedit` | mux, extract, verify | required, installable | `mkvtoolnix.download/windows/releases/<ver>/mkvtoolnix-64-bit-<ver>.zip` (103.0 at time of writing); Linux/macOS via the official repos or Homebrew (link) | publisher `.sha256` |
 | `SvtAv1EncApp` | AV1 profiles | required for AV1, installable | `Patman86/SVT-AV1-Mods-by-Patman` releases (`.7z`, mainline / Essential / HDR variants; StaxRip's designated source, official GitLab publishes source only) | none published → warn; HTTPS + pinned tag |
 | `x265` | HEVC profiles | required for HEVC, installable | `Patman86/x265-Mod-by-Patman` releases (`.7z`, multilib 8/10/12-bit; StaxRip's designated source, upstream publishes source only) | none published → warn; HTTPS + pinned tag |
@@ -126,12 +126,15 @@ x265 and an AAC encoder. The order encoders are tried in is `[encode] aac_encode
 `subx tools check` prints one line per tool: status, version, path, and for a
 missing tool the official link and install hint for the current OS. `subx tools
 install <name|all>` covers the installable rows (ffmpeg, MKVToolNix, SVT-AV1,
-x265, qaac, VapourSynth, yt-dlp): download into `tools/<name>/`, verify the
-publisher's checksum when one exists (otherwise print the SHA-256 that was
-downloaded and warn, since the Patman releases publish none), extract `.zip`
-(`zip` crate), `.tar.xz` (`tar` + `xz2`) or `.7z` (`sevenz-rust`), re-run the
-version probe. Versions are pinned in a table in `tools.rs`; `--latest` queries
-the release API instead.
+x265, qaac, opusenc, yt-dlp; VapourSynth stays link-only): download into
+`tools/<name>/` while hashing, verify the publisher's checksum when one exists
+(gyan.dev and MKVToolNix `.sha256`, BtbN `checksums.sha256`, yt-dlp `SHA2-256SUMS`;
+otherwise print the SHA-256 that was downloaded and warn, since the Patman and
+qaac releases publish none), extract `.zip` (`zip` crate), `.7z` (`sevenz-rust`)
+or `.tar.xz` (system `tar`, present on every Linux/macOS), then re-run the
+version probe. Versions are pinned in `tools.rs` (ffmpeg 9.0.2, MKVToolNix
+103.0, yt-dlp 2026.08.19, the Patman tags); only BtbN is a rolling channel by
+design. A `--latest` mode querying the release pages is a later addition.
 Every command calls `tools::require(&[...])` before touching any file so the
 failure is immediate and actionable.
 
@@ -392,8 +395,9 @@ environment variables, so CI never needs the binaries.
 ## Crate changes
 
 Remove: `chardetng`, `encoding_rs`, `console`, `rayon`, `similar`, `thiserror`
-(unused), `once_cell` (use `std::sync::LazyLock`). Add: `zip`, `tar`, `xz2`,
-`sevenz-rust`, `sha2`. Trim: `reqwest` with `default-features = false` (one TLS stack),
+(unused), `once_cell` (use `std::sync::LazyLock`). Add: `zip` (deflate only),
+`sevenz-rust`, `sha2`; `.tar.xz` goes through the system `tar`, so no C
+dependency is linked. Trim: `reqwest` with `default-features = false` (one TLS stack),
 `tokio` to `rt-multi-thread, macros, process, fs, io-util, time, sync`.
 `Cargo.toml`: `rust-version`, release profile `lto = "fat"`, `codegen-units = 1`,
 `panic = "abort"`. Remove the crate-level `#![allow(dead_code)]`.

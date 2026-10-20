@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::Args;
 
-use crate::common::ffmpeg_find;
+use crate::common::tools;
 
 /// `subx mux --video V --audio A --subs S -o OUT.mkv`
 #[derive(Debug, Args)]
@@ -273,7 +273,7 @@ async fn run_batch(ffmpeg: &Path, args: &MuxArgs, dir: &Path) -> Result<()> {
 }
 
 pub async fn run(args: MuxArgs) -> Result<()> {
-    let (ffmpeg, _) = ffmpeg_find::find_ffmpeg()?;
+    let (ffmpeg, _) = tools::ffmpeg_pair()?;
     if let Some(dir) = args.batch_dir.clone() {
         return run_batch(&ffmpeg, &args, &dir).await;
     }
@@ -499,7 +499,7 @@ mod tests {
         .await
         .expect("mux failed");
 
-        let (_, ffprobe) = ffmpeg_find::find_ffmpeg().unwrap();
+        let (_, ffprobe) = tools::ffmpeg_pair().unwrap();
         let streams = probe::probe_streams(&ffprobe, &out).await.unwrap();
         let (mut v, mut a, mut s) = (0, 0, 0);
         let mut langs = Vec::new();
@@ -541,7 +541,7 @@ mod tests {
         .expect("hardsub failed");
 
         assert!(std::fs::metadata(&out).unwrap().len() > 0);
-        let (_, ffprobe) = ffmpeg_find::find_ffmpeg().unwrap();
+        let (_, ffprobe) = tools::ffmpeg_pair().unwrap();
         let streams = probe::probe_streams(&ffprobe, &out).await.unwrap();
         assert!(
             streams
@@ -580,7 +580,7 @@ mod tests {
 
         let out = out_dir.join("Ep01.muxed.mkv");
         assert!(out.is_file(), "batch output missing");
-        let (_, ffprobe) = ffmpeg_find::find_ffmpeg().unwrap();
+        let (_, ffprobe) = tools::ffmpeg_pair().unwrap();
         let streams = probe::probe_streams(&ffprobe, &out).await.unwrap();
         let subs = streams
             .iter()
