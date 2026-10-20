@@ -1,7 +1,7 @@
 # subx 2 — Design: native fansub pipeline
 
-Status: phases 0 (CI and releases), 1 (quick wins) and 2 (tools module) are
-implemented; phases 3–7 are pending. The current `encode` command drives StaxRip through its
+Status: phases 0 (CI and releases), 1 (quick wins), 2 (tools module) and
+3 (episode identity) are implemented; phases 4–7 are pending. The current `encode` command drives StaxRip through its
 command line; this document describes the target architecture that removes
 that dependency while keeping the output equivalent, and the roadmap to get
 there. `AGENTS.md` conventions apply throughout.

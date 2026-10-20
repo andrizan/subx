@@ -129,7 +129,9 @@ subx mux --batch-dir DIR [--out-dir D] [--title T]
 - Default softmux: stream copy (`-c copy`), source audio kept, subtitle language
   auto-tagged from filenames (`Ep01.id.ass` → `ind`).
 - `--hardsub` burns one subtitle in (libx264 CRF 18) while other tracks still mux.
-- `--batch-dir` muxes every video with its same-stem audio/subs to `<stem>.muxed.mkv`.
+- `--batch-dir` muxes every video with its same-stem audio/subs (`Ep01.id.ass` for
+  `Ep01.mkv`) to `<stem>.muxed.mkv`; when no same-stem file exists, files with the
+  same episode number pair instead (`Show - 01.id.ass` for `[Grp] Show - 01 [BD].mkv`).
 
 ### `convert` — srt ↔ ass ↔ vtt
 
@@ -200,9 +202,12 @@ given one way or the other. For every video in `<SOURCE>`:
 - Output name: `<prefix> <series> - <NN or OVA N> (<tag>).mkv` in `<DEST>`;
   `--series` defaults to the source folder name. Episodes whose output already
   exists are skipped (delete the file to redo one).
-- Episode numbers come from file names (`- 09`, `S01E09`, `EP9`, `OVA 2`, or the
-  last standalone number). `--only` takes comma-separated episodes and ranges:
-  `--only 5,8-10,OVA 1-3`.
+- Episode numbers come from file names, in this priority: `S01E09`, `OVA 2`,
+  `SP 1`/`Special 1`, `Movie`, ` - 09`, `EP9`/`E09`, then the last standalone 1–3
+  digit number (so `480p`, `x265` and years never count); bracketed groups are
+  ignored and `v2` revisions still pair. Output names use `09`, `S01E09`,
+  `OVA 2`, `SP 1`, `Movie`. `--only` takes comma-separated episodes and ranges:
+  `--only 5,8-10,OVA 1-3,S2E1-3`.
 - `--template` ignores case and punctuation (`Anime480p.AV1.Opus96` finds
   `Anime-480p.AV1.Opus96`). `--resolution` is passed to StaxRip because the
   template derives the height from the aspect ratio (848 → 476); an empty value

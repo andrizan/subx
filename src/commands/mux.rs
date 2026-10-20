@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::Args;
 
-use crate::common::tools;
+use crate::common::{episode, tools};
 
 /// `subx mux --video V --audio A --subs S -o OUT.mkv`
 #[derive(Debug, Args)]
@@ -186,6 +186,33 @@ fn matches_stem(candidate: &Path, video_stem: &str, video_path: &Path) -> bool {
     cs == vs || cs.starts_with(&format!("{vs}."))
 }
 
+/// Audio and subtitle sidecars of `video`: same-stem files first (`Ep01.id.ass`
+/// for `Ep01.mkv`); only when that finds nothing, files whose episode number
+/// matches (`Show - 01.id.ass` for `[Grp] Show - 01 [BD].mkv`).
+fn sidecars_for(video: &Path, stem: &str, siblings: &[PathBuf]) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let pick = |accept: &dyn Fn(&Path) -> bool| {
+        let mut audios = Vec::new();
+        let mut subs = Vec::new();
+        for p in siblings {
+            if p == video || !accept(p) {
+                continue;
+            }
+            let ext = ext_of(p);
+            if AUDIO_EXTS.contains(&ext.as_str()) {
+                audios.push(p.clone());
+            } else if SUB_EXTS.contains(&ext.as_str()) {
+                subs.push(p.clone());
+            }
+        }
+        (audios, subs)
+    };
+    let by_stem = pick(&|p| matches_stem(p, stem, video));
+    if !by_stem.0.is_empty() || !by_stem.1.is_empty() {
+        return by_stem;
+    }
+    pick(&|p| episode::same_episode(p, video))
+}
+
 fn ext_of(p: &Path) -> String {
     p.extension()
         .and_then(|e| e.to_str())
@@ -225,17 +252,12 @@ async fn run_batch(ffmpeg: &Path, args: &MuxArgs, dir: &Path) -> Result<()> {
             .and_then(|s| s.to_str())
             .unwrap_or("out")
             .to_string();
-        let audios: Vec<PathBuf> = siblings
-            .iter()
-            .filter(|p| AUDIO_EXTS.contains(&ext_of(p).as_str()) && matches_stem(p, &stem, video))
-            .cloned()
-            .collect();
-        let subs: Vec<SubInput> = siblings
-            .iter()
-            .filter(|p| SUB_EXTS.contains(&ext_of(p).as_str()) && matches_stem(p, &stem, video))
+        let (audios, sub_paths) = sidecars_for(video, &stem, &siblings);
+        let subs: Vec<SubInput> = sub_paths
+            .into_iter()
             .map(|p| SubInput {
-                path: p.clone(),
-                lang: sub_lang_639_2(p),
+                lang: sub_lang_639_2(&p),
+                path: p,
             })
             .collect();
         if audios.is_empty() && subs.is_empty() {
@@ -417,6 +439,38 @@ mod tests {
         assert!(matches_stem(Path::new("Ep01.mka"), "Ep01", v));
         assert!(!matches_stem(Path::new("Ep02.id.ass"), "Ep01", v));
         assert!(!matches_stem(v, "Ep01", v));
+    }
+
+    #[test]
+    fn pairs_sidecars_by_stem_then_by_episode() {
+        let paths = |names: &[&str]| -> Vec<PathBuf> { names.iter().map(PathBuf::from).collect() };
+
+        // Same-stem files win and episode-number matches are ignored while any exist.
+        let v = PathBuf::from("Ep01.mkv");
+        let sib = paths(&[
+            "Ep01.mkv",
+            "Ep01.id.ass",
+            "Ep01.mka",
+            "Show - 01.en.srt",
+            "Ep02.id.ass",
+        ]);
+        let (audios, subs) = sidecars_for(&v, "Ep01", &sib);
+        assert_eq!(audios, paths(&["Ep01.mka"]));
+        assert_eq!(subs, paths(&["Ep01.id.ass"]));
+
+        // Release-style names share no stem, so the episode number pairs them.
+        let v = PathBuf::from("[Grp] Show - 01 [BD 1080p].mkv");
+        let sib = paths(&[
+            "[Grp] Show - 01 [BD 1080p].mkv",
+            "[Grp] Show - 02 [BD 1080p].mkv",
+            "Show - 01.id.ass",
+            "Show - 02.id.ass",
+            "Show - 01.mka",
+            "notes.txt",
+        ]);
+        let (audios, subs) = sidecars_for(&v, "[Grp] Show - 01 [BD 1080p]", &sib);
+        assert_eq!(audios, paths(&["Show - 01.mka"]));
+        assert_eq!(subs, paths(&["Show - 01.id.ass"]));
     }
 
     /// Generate shared fixtures: silent video + tone audio + en/id subs.

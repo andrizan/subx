@@ -11,6 +11,7 @@ use serde_json::Value;
 use walkdir::WalkDir;
 
 use crate::common::config::AppConfig;
+use crate::common::episode::{self, EpisodeId};
 
 /// `subx encode <SOURCE> <DEST>` — encode every video in a folder through a StaxRip template.
 ///
@@ -89,24 +90,13 @@ pub struct EncodeArgs {
 const VIDEO_EXTS: &[&str] = &["mkv", "mp4"];
 const SUB_EXTS: &[&str] = &["ass", "ssa", "srt"];
 
-static BRACKETS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[[^\]]*\]|\([^)]*\)").unwrap());
-static OVA: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\bOVA\s*0*(\d+)\b").unwrap());
-static SEASON_EP: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\bS\d+\s*E0*(\d{1,3})\b").unwrap());
-static DASH_EP: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\s-\s*0*(\d{1,3})(?:v\d)?\b").unwrap());
-static EP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\bEP?\s*0*(\d{1,3})\b").unwrap());
-static NUMBER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b0*(\d{1,3})\b").unwrap());
-static RANGE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)^(OVA\s*)?0*(\d+)\s*-\s*(?:OVA\s*)?0*(\d+)$").unwrap());
 static RESOLUTION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d+x\d+$").unwrap());
 static SUB_LANG: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\.([a-z]{2,3})\.(?:ass|ssa|srt)$").unwrap());
 
 #[derive(Debug)]
 struct Episode {
-    /// "09" or "OVA 1".
-    key: String,
+    id: EpisodeId,
     video: PathBuf,
     subs: Vec<PathBuf>,
     target: PathBuf,
@@ -131,67 +121,6 @@ fn has_ext(path: &Path, exts: &[&str]) -> bool {
 
 fn file_name(path: &Path) -> Option<&str> {
     path.file_name().and_then(|n| n.to_str())
-}
-
-/// Episode number from a video or subtitle file name: "09" or "OVA 1".
-fn episode_key(file_name: &str) -> Option<String> {
-    let stem = Path::new(file_name).file_stem()?.to_str()?;
-    let cleaned = BRACKETS.replace_all(stem, " ").replace('_', " ");
-
-    if let Some(c) = OVA.captures(&cleaned) {
-        return Some(format!("OVA {}", c[1].parse::<u32>().ok()?));
-    }
-    for re in [&*SEASON_EP, &*DASH_EP, &*EP] {
-        if let Some(c) = re.captures(&cleaned) {
-            return Some(format!("{:02}", c[1].parse::<u32>().ok()?));
-        }
-    }
-    // Fall back to the last standalone 1-3 digit number ("480p" and "x265" do not count).
-    let last = NUMBER.captures_iter(&cleaned).last()?;
-    Some(format!("{:02}", last[1].parse::<u32>().ok()?))
-}
-
-/// Comparable form of an episode key. Trailing digits are normalized, so "9"
-/// and "09" -> "09", while "OVA 1", "OVA 01" and "ova1" -> "OVA1".
-fn key_token(text: &str) -> String {
-    let t = text.trim();
-    let digits_at = t
-        .char_indices()
-        .rev()
-        .find(|(_, c)| !c.is_ascii_digit())
-        .map_or(0, |(i, c)| i + c.len_utf8());
-    let (prefix, digits) = t.split_at(digits_at);
-    let prefix: String = prefix.split_whitespace().collect::<String>().to_uppercase();
-    match digits.parse::<u32>() {
-        Ok(n) if prefix.is_empty() => format!("{n:02}"),
-        Ok(n) => format!("{prefix}{n}"),
-        Err(_) => prefix,
-    }
-}
-
-/// "10,12-14,OVA 1-3" -> tokens comparable with `key_token(episode_key(..))`.
-fn expand_only(spec: &str) -> Result<Vec<String>> {
-    let mut out = Vec::new();
-    for part in spec.split(',').map(str::trim).filter(|p| !p.is_empty()) {
-        let Some(c) = RANGE.captures(part) else {
-            out.push(key_token(part));
-            continue;
-        };
-        let from: u32 = c[2]
-            .parse()
-            .with_context(|| format!("bad range '{part}'"))?;
-        let to: u32 = c[3]
-            .parse()
-            .with_context(|| format!("bad range '{part}'"))?;
-        if from > to {
-            anyhow::bail!("Range '{part}' is reversed.");
-        }
-        let prefix = c.get(1).map_or("", |m| m.as_str());
-        for n in from..=to {
-            out.push(key_token(&format!("{prefix}{n}")));
-        }
-    }
-    Ok(out)
 }
 
 fn target_name(prefix: &str, series: &str, key: &str, tag: &str) -> String {
@@ -228,32 +157,33 @@ fn build_plan(
         if std::fs::metadata(sub).map_or(0, |m| m.len()) == 0 {
             continue;
         }
-        if let Some(key) = file_name(sub).and_then(episode_key) {
-            subs_by_key.entry(key).or_default().push(sub.clone());
+        if let Some(id) = file_name(sub).and_then(EpisodeId::from_file_name) {
+            subs_by_key.entry(id.key()).or_default().push(sub.clone());
         }
     }
 
     let mut plan: Vec<Episode> = Vec::new();
     for video in files.iter().filter(|p| has_ext(p, VIDEO_EXTS)) {
         let name = file_name(video).unwrap_or_default();
-        let Some(key) = episode_key(name) else {
+        let Some(id) = EpisodeId::from_file_name(name) else {
             tracing::warn!("Episode number not detected, skipped: {name}");
             continue;
         };
-        if !only.is_empty() && !only.contains(&key_token(&key)) {
+        let key = id.key();
+        if !only.is_empty() && !only.contains(&key) {
             continue;
         }
-        if let Some(prev) = plan.iter().find(|e| e.key == key) {
+        if let Some(prev) = plan.iter().find(|e| e.id.key() == key) {
             anyhow::bail!(
-                "Two videos share episode {key}: {} and {name}",
+                "Two videos share episode {id}: {} and {name}",
                 file_name(&prev.video).unwrap_or_default()
             );
         }
         plan.push(Episode {
             subs: subs_by_key.get(&key).cloned().unwrap_or_default(),
-            target: dest.join(target_name(prefix, series, &key, tag)),
+            target: dest.join(target_name(prefix, series, &id.to_string(), tag)),
             video: video.clone(),
-            key,
+            id,
         });
     }
     if plan.is_empty() {
@@ -609,7 +539,7 @@ pub async fn run(args: EncodeArgs, cfg: &AppConfig) -> Result<()> {
     let only = args
         .only
         .as_deref()
-        .map(expand_only)
+        .map(episode::expand_selection)
         .transpose()?
         .unwrap_or_default();
     let plan = build_plan(&args.source, &args.dest, &prefix, &series, &tag, &only)?;
@@ -622,7 +552,7 @@ pub async fn run(args: EncodeArgs, cfg: &AppConfig) -> Result<()> {
         };
         println!(
             "{:<7} {:<22} subs={} -> {}",
-            ep.key,
+            ep.id.to_string(),
             status,
             ep.subs.len(),
             file_name(&ep.target).unwrap_or_default()
@@ -651,9 +581,9 @@ pub async fn run(args: EncodeArgs, cfg: &AppConfig) -> Result<()> {
             continue;
         }
         if ep.subs.is_empty() {
-            tracing::warn!("Episode {}: no matching subtitle in the folder.", ep.key);
+            tracing::warn!("Episode {}: no matching subtitle in the folder.", ep.id);
         }
-        let work_dir = work_root.join(ep.key.replace(' ', ""));
+        let work_dir = work_root.join(ep.id.key());
         let cmdline = staxrip_cmdline(
             &ctx.template,
             &work_dir.join("source.mkv"),
@@ -666,26 +596,22 @@ pub async fn run(args: EncodeArgs, cfg: &AppConfig) -> Result<()> {
         if args.dry_run {
             println!(
                 "\n[{}] work copy: {}",
-                ep.key,
+                ep.id,
                 work_dir.join("source.mkv").display()
             );
-            println!("[{}] StaxRip.exe {cmdline}", ep.key);
+            println!("[{}] StaxRip.exe {cmdline}", ep.id);
             continue;
         }
 
-        println!(
-            "\n[{}] {}",
-            ep.key,
-            file_name(&ep.video).unwrap_or_default()
-        );
+        println!("\n[{}] {}", ep.id, file_name(&ep.video).unwrap_or_default());
         match encode_one(&ctx, ep, &work_dir, &cmdline).await {
             Ok(()) => {
                 ok += 1;
-                println!("[OK] {} -> {}", ep.key, ep.target.display());
+                println!("[OK] {} -> {}", ep.id, ep.target.display());
             }
             Err(e) => {
                 failed += 1;
-                println!("[FAILED] {} -> {e:#}", ep.key);
+                println!("[FAILED] {} -> {e:#}", ep.id);
                 println!("Work copy kept in {}", work_dir.display());
             }
         }
@@ -708,58 +634,6 @@ pub async fn run(args: EncodeArgs, cfg: &AppConfig) -> Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn detects_episode_keys() {
-        let cases = [
-            (
-                "[Cleo]Akatsuki_no_Yona_-_09_(Dual Audio_10bit_BD1080p_x265).mkv",
-                "09",
-            ),
-            (
-                "_D_Animesub__Akatsuki_no_Yona_BD___06_480p_MegumiNime.S0.id.ass",
-                "06",
-            ),
-            (
-                "[AkihitoSubs] Akatsuki no Yona - OVA 1 [576p][HEVC][x265][Opus][10Bit].mkv",
-                "OVA 1",
-            ),
-            (
-                "_Kusonime__Akatsuki_no_Yona_OVA02_Mkv480p.S0._Lovelie__Akatsuki_no_Yona_OVA_02.id.ass",
-                "OVA 2",
-            ),
-            ("Show S02E05 [1080p].mkv", "05"),
-            ("Show EP7 720p.mkv", "07"),
-            ("Show 12 1080p x265 2017.mkv", "12"),
-        ];
-        for (name, want) in cases {
-            assert_eq!(episode_key(name).as_deref(), Some(want), "{name}");
-        }
-        assert_eq!(episode_key("Movie.mkv"), None);
-    }
-
-    #[test]
-    fn normalizes_keys() {
-        assert_eq!(key_token("9"), "09");
-        assert_eq!(key_token("09"), "09");
-        assert_eq!(key_token("OVA 1"), "OVA1");
-        assert_eq!(key_token("OVA 01"), "OVA1");
-        assert_eq!(key_token(" ova1 "), "OVA1");
-        assert_eq!(key_token("Movie"), "MOVIE");
-        assert_eq!(key_token(""), "");
-    }
-
-    #[test]
-    fn expands_episode_ranges() {
-        assert_eq!(expand_only("10-13").unwrap(), ["10", "11", "12", "13"]);
-        assert_eq!(
-            expand_only("08-09,22,OVA 1-2").unwrap(),
-            ["08", "09", "22", "OVA1", "OVA2"]
-        );
-        assert_eq!(expand_only("OVA1-OVA2").unwrap(), ["OVA1", "OVA2"]);
-        assert_eq!(expand_only("5").unwrap(), ["05"]);
-        assert!(expand_only("13-10").is_err());
-    }
 
     #[test]
     fn builds_target_names() {
@@ -867,18 +741,18 @@ mod tests {
 
         let dest = Path::new("out");
         let plan = build_plan(src, dest, "[P]", "Show", "T", &[]).unwrap();
-        let summary: Vec<(&str, usize)> = plan
+        let summary: Vec<String> = plan
             .iter()
-            .map(|e| (e.key.as_str(), e.subs.len()))
+            .map(|e| format!("{}:{}", e.id, e.subs.len()))
             .collect();
         // Plan follows file-name order; empty subtitle files are ignored, so 09 has none.
-        assert_eq!(summary, [("09", 0), ("10", 1), ("OVA 1", 1)]);
+        assert_eq!(summary, ["09:0", "10:1", "OVA 1:1"]);
         assert_eq!(plan[1].target, dest.join("[P] Show - 10 (T).mkv"));
 
-        let only = expand_only("10").unwrap();
+        let only = episode::expand_selection("10").unwrap();
         let picked = build_plan(src, dest, "[P]", "Show", "T", &only).unwrap();
         assert_eq!(picked.len(), 1);
-        assert_eq!(picked[0].key, "10");
+        assert_eq!(picked[0].id.to_string(), "10");
         assert!(build_plan(src, dest, "[P]", "Show", "T", &["99".to_string()]).is_err());
     }
 
