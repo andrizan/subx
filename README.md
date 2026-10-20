@@ -4,7 +4,7 @@ All-in-one fansub toolkit in a single Rust binary: extract subtitles/audio from
 video, clean and retime them, translate via LibreTranslate or any
 OpenAI-compatible AI model, QC the result, and mux it back.
 
-Status: **complete** — 91 unit + 7 end-to-end tests, `clippy --all-targets -D warnings` clean.
+Status: **complete** — 93 unit + 8 end-to-end tests, `clippy --all-targets -D warnings` clean.
 
 ## Requirements
 
@@ -42,7 +42,7 @@ Shortcuts: `make build-release`, `make check`, `make run ARGS="..."`.
 | `probe` | Full media metadata: format, streams, chapters, tags (`--json` for scripts) |
 | `fetch` | Download subtitles via `yt-dlp` |
 | `stats` | QC report: reading speed (CPS), durations, overlaps |
-| `encode` | Batch-encode a folder: one audio language, no embedded subs/fonts, matching external subs added — through a StaxRip template or natively (ffmpeg → SVT-AV1/x265, Opus/AAC, mkvmerge) from a TOML profile |
+| `encode` | Batch-encode a folder from a TOML profile (ffmpeg → SVT-AV1/x265, Opus/AAC, mkvmerge): one audio language, no embedded subs/fonts, matching external subs added; `--engine staxrip` drives a StaxRip template instead |
 | `tools` | Check, locate or install the external binaries (ffmpeg, MKVToolNix, SVT-AV1, x265, qaac, yt-dlp, ...) |
 
 ```powershell
@@ -67,6 +67,7 @@ over it. Secrets belong in **`subx.local.toml`** (gitignored, overrides
 ```powershell
 cargo fmt --check && cargo clippy -- -D warnings && cargo test   # gate (or: make check)
 cargo test -- --ignored                                          # end-to-end (needs ffmpeg)
+SUBX_PARITY_NATIVE=a.mkv SUBX_PARITY_REFERENCE=b.mkv cargo test -- --ignored parity   # encode parity
 ```
 
 Conventions: [`AGENTS.md`](AGENTS.md); architecture and roadmap:

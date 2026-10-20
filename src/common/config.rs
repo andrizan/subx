@@ -46,7 +46,7 @@ pub struct ToolsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EncodeConfig {
-    /// `staxrip` (drive StaxRip) or `native` (ffmpeg + encoder + mkvmerge).
+    /// `native` (ffmpeg + encoder + mkvmerge, the default) or `staxrip` (drive StaxRip).
     pub engine: String,
     /// Default `[encode.profiles.*]` entry for the native engine.
     pub profile: Option<String>,
@@ -155,7 +155,7 @@ impl Default for AppConfig {
 impl Default for EncodeConfig {
     fn default() -> Self {
         Self {
-            engine: "staxrip".to_string(),
+            engine: "native".to_string(),
             profile: None,
             jobs: 1,
             stall_min: 5,
@@ -260,7 +260,7 @@ mod tests {
         assert_eq!(cfg.encode.audio_lang, "jpn");
         assert_eq!(cfg.encode.sub_lang, "id");
         assert!(cfg.encode.prefix.is_empty() && cfg.encode.tag.is_empty());
-        assert_eq!(cfg.encode.engine, "staxrip");
+        assert_eq!(cfg.encode.engine, "native");
         assert_eq!(cfg.encode.jobs, 1);
         assert_eq!(cfg.encode.aac_encoders[0], "qaac");
         assert!(cfg.encode.profiles.is_empty());

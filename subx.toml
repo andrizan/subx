@@ -19,21 +19,16 @@ libre_url = "http://localhost:5000"
 # (gitignored, never committed) so the key can't leak into git:
 #   ai_api_key = "sk-or-..."
 
-# --- encode: StaxRip-driven batch encode (docs/USAGE.md#encode). Machine-specific
-# values belong in subx.local.toml; every CLI flag wins over these.
-# [tools]
-# staxrip_dir = "D:/Apps/StaxRip"       # folder with StaxRip.exe (required)
+# --- encode: batch encode (docs/USAGE.md#encode). Machine-specific values belong
+# in subx.local.toml; every CLI flag wins over these.
 # [encode]
-# template = "Anime-480p.AV1.Opus96"     # StaxRip template (required)
 # prefix = "[GROUP]"                     # output name prefix, "" for none
 # tag = "BD 480p AV1.Opus"               # tag in parentheses, "" for none
-# resolution = "848x480"                 # "" keeps the template's size
 # audio_lang = "jpn"
 # sub_lang = "id"
 #
-# Native engine (no StaxRip): engine = "native" plus one profile per release type.
-# `video` is the encoder command line copied from StaxRip's log/preview.
-# engine = "native"
+# Native engine (the default): one profile per release type; `video` is the
+# encoder command line copied from StaxRip's log/preview.
 # profile = "anime480p"
 # jobs = 1
 # [encode.profiles.anime480p]
@@ -43,3 +38,11 @@ libre_url = "http://localhost:5000"
 # encoder = "svt-av1"                     # svt-av1 | x265
 # video = ["--rc", "0", "--crf", "35", "--preset", "4", "--tune", "2"]
 # audio = { codec = "opus", bitrate = 96 }   # opus | aac-lc | he-aac | he-aac-v2
+#
+# StaxRip engine instead (engine = "staxrip"): needs StaxRip and a template.
+# [tools]
+# staxrip_dir = "D:/Apps/StaxRip"       # folder with StaxRip.exe
+# [encode]
+# engine = "staxrip"
+# template = "Anime-480p.AV1.Opus96"     # StaxRip template
+# resolution = "848x480"                 # "" keeps the template's size

@@ -77,8 +77,8 @@ pub struct EncodeArgs {
     #[arg(long)]
     pub work_dir: Option<PathBuf>,
 
-    /// `staxrip` (drive StaxRip) or `native` (ffmpeg + encoder + mkvmerge).
-    /// Default: `[encode] engine` (staxrip).
+    /// `native` (ffmpeg + encoder + mkvmerge) or `staxrip` (drive StaxRip).
+    /// Default: `[encode] engine` (native).
     #[arg(long)]
     pub engine: Option<String>,
 

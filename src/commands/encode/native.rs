@@ -135,7 +135,17 @@ pub struct SourceInfo {
     /// `24000/1001`.
     pub fps: String,
     pub duration_s: f64,
-    pub has_chapters: bool,
+    /// Chapter entries in the source (0 = none); the output must carry the same number.
+    pub chapter_entries: u64,
+}
+
+/// Total chapter entries across all editions of a `mkvmerge -J` report.
+fn chapter_entries(info: &Value) -> u64 {
+    info["chapters"].as_array().map_or(0, |c| {
+        c.iter()
+            .map(|e| e["num_entries"].as_u64().unwrap_or(0))
+            .sum()
+    })
 }
 
 fn gcd(a: u32, b: u32) -> u32 {
@@ -402,9 +412,7 @@ impl Native {
         let delay_ms = track["properties"]["minimum_timestamp"]
             .as_i64()
             .map_or(0, |ns| (ns as f64 / 1_000_000.0).round() as i64);
-        let has_chapters = mkv["chapters"]
-            .as_array()
-            .is_some_and(|c| c.iter().any(|e| e["num_entries"].as_u64().unwrap_or(0) > 0));
+        let chapter_entries = chapter_entries(&mkv);
 
         let full = probe::probe_full(&self.ffprobe, video).await?;
         let v = full
@@ -432,7 +440,7 @@ impl Native {
             height,
             fps,
             duration_s,
-            has_chapters,
+            chapter_entries,
         })
     }
 
@@ -556,6 +564,13 @@ impl Native {
                 s("-vn"),
                 s("-sn"),
                 s("-dn"),
+                // Keep the source's chapters/tags out of the audio file: the
+                // mux adds the chapters itself, and MP4 audio would otherwise
+                // carry a second copy.
+                s("-map_chapters"),
+                s("-1"),
+                s("-map_metadata"),
+                s("-1"),
             ];
             a.extend(codec_args);
             a.push(path(&audio_out));
@@ -652,7 +667,7 @@ impl Native {
         // --- chapters + mux --------------------------------------------------
         let mut steps = vec![video, audio];
         let chapters = work.join("chapters.xml");
-        if src.has_chapters {
+        if src.chapter_entries > 0 {
             steps.push(Step::Run {
                 name: "chapters",
                 program: self.mkvextract.clone(),
@@ -671,6 +686,9 @@ impl Native {
         }
         mux.push(path(&video_out));
         mux.extend([
+            // Whatever container the audio encoder wrote, only its track is wanted.
+            s("--no-chapters"),
+            s("--no-global-tags"),
             s("--language"),
             format!("0:{}", src.audio_lang),
             s("--sync"),
@@ -688,7 +706,7 @@ impl Native {
                 path(sub),
             ]);
         }
-        if src.has_chapters {
+        if src.chapter_entries > 0 {
             mux.extend([s("--chapters"), path(&chapters)]);
         }
         steps.push(Step::Run {
@@ -901,6 +919,13 @@ pub async fn encode_one(n: &Native, ep: &Episode, work: &Path) -> Result<()> {
             ));
         }
     }
+    let got_chapters = chapter_entries(&info);
+    if got_chapters != src.chapter_entries {
+        problems.push(format!(
+            "chapters={got_chapters} (source {})",
+            src.chapter_entries
+        ));
+    }
     if !problems.is_empty() {
         bail!("output does not match: {}", problems.join("; "));
     }
@@ -923,7 +948,7 @@ pub async fn dry_run(n: &Native, plan: &[Episode], work_root: &Path) -> Result<(
             src.width,
             src.height,
             src.fps,
-            if src.has_chapters { "yes" } else { "no" }
+            src.chapter_entries
         );
         for step in n.steps(ep, &src, &work)? {
             println!("[{}] {}: {}", ep.id, step.name(), step.render());
@@ -990,11 +1015,174 @@ pub async fn run_all(n: &Native, plan: &[Episode], work_root: &Path, jobs: usize
     Ok(failed)
 }
 
+/// Differences between two `mkvmerge -J` reports that matter for parity:
+/// track layout, codecs, sizes, languages, flags, delays, fonts, chapters,
+/// duration (1 s tolerance). Empty means the containers are equivalent.
+#[cfg(test)]
+pub fn container_diff(a: &Value, b: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    let tracks = |v: &Value| v["tracks"].as_array().cloned().unwrap_or_default();
+    let (ta, tb) = (tracks(a), tracks(b));
+    if ta.len() != tb.len() {
+        out.push(format!("track count {} vs {}", ta.len(), tb.len()));
+        return out;
+    }
+    for (i, (x, y)) in ta.iter().zip(&tb).enumerate() {
+        for key in ["type", "codec"] {
+            if x[key] != y[key] {
+                out.push(format!("track {i} {key}: {} vs {}", x[key], y[key]));
+            }
+        }
+        for key in [
+            "pixel_dimensions",
+            "display_dimensions",
+            "language",
+            "default_track",
+            "forced_track",
+            "minimum_timestamp",
+            "audio_channels",
+            "audio_sampling_frequency",
+        ] {
+            if x["properties"][key] != y["properties"][key] {
+                out.push(format!(
+                    "track {i} {key}: {} vs {}",
+                    x["properties"][key], y["properties"][key]
+                ));
+            }
+        }
+    }
+    let fonts = |v: &Value| v["attachments"].as_array().map_or(0, Vec::len);
+    if fonts(a) != fonts(b) {
+        out.push(format!("attachments {} vs {}", fonts(a), fonts(b)));
+    }
+    let chapters = |v: &Value| {
+        v["chapters"].as_array().map_or(0, |c| {
+            c.iter()
+                .map(|e| e["num_entries"].as_u64().unwrap_or(0))
+                .sum::<u64>()
+        })
+    };
+    if chapters(a) != chapters(b) {
+        out.push(format!("chapters {} vs {}", chapters(a), chapters(b)));
+    }
+    let duration = |v: &Value| {
+        v["container"]["properties"]["duration"]
+            .as_f64()
+            .map(|ns| ns / 1e9)
+    };
+    if let (Some(x), Some(y)) = (duration(a), duration(b))
+        && (x - y).abs() > 1.0
+    {
+        out.push(format!("duration {x:.2}s vs {y:.2}s"));
+    }
+    out
+}
+
+/// `All:` value from ffmpeg's `ssim` filter summary line.
+#[cfg(test)]
+pub fn parse_ssim(text: &str) -> Option<f64> {
+    text.lines().filter(|l| l.contains("SSIM")).find_map(|l| {
+        l.split_whitespace()
+            .find_map(|t| t.strip_prefix("All:"))
+            .and_then(|v| v.parse().ok())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::common::config::AudioSpec;
     use crate::common::episode::EpisodeId;
+    use serde_json::json;
+
+    #[test]
+    fn container_diff_reports_what_matters() {
+        let a = json!({
+            "container": {"properties": {"duration": 1421087000000u64}},
+            "tracks": [
+                {"type": "video", "codec": "AV1", "properties": {"pixel_dimensions": "848x480", "display_dimensions": "853x480"}},
+                {"type": "audio", "codec": "Opus", "properties": {"language": "jpn", "default_track": true, "minimum_timestamp": 9000000}},
+                {"type": "subtitles", "codec": "SubStationAlpha", "properties": {"language": "ind", "default_track": true}},
+            ],
+            "attachments": [],
+            "chapters": [{"num_entries": 6}],
+        });
+        assert!(container_diff(&a, &a).is_empty());
+
+        let mut b = a.clone();
+        b["tracks"][0]["properties"]["pixel_dimensions"] = json!("848x476");
+        b["tracks"][1]["properties"]["language"] = json!("eng");
+        b["attachments"] = json!([{}, {}]);
+        b["container"]["properties"]["duration"] = json!(1419000000000u64);
+        let diff = container_diff(&a, &b);
+        assert_eq!(diff.len(), 4, "{diff:?}");
+        assert!(diff[0].contains("pixel_dimensions") && diff[1].contains("language"));
+        assert!(diff[2].starts_with("attachments 0 vs 2") && diff[3].starts_with("duration"));
+
+        let mut c = a.clone();
+        c["tracks"].as_array_mut().unwrap().pop();
+        assert_eq!(container_diff(&a, &c), ["track count 3 vs 2"]);
+    }
+
+    #[test]
+    fn parses_ssim_summary() {
+        let text = "frame= 34072 fps=2500\n[Parsed_ssim_0 @ 0x1] SSIM Y:0.998712 (28.90) U:0.999301 (31.55) V:0.999280 (31.43) All:0.998901 (29.59)\n";
+        assert_eq!(parse_ssim(text), Some(0.998901));
+        assert_eq!(parse_ssim("nothing here"), None);
+    }
+
+    /// Parity against a reference encode (for example StaxRip's output of the
+    /// same episode). Needs ffmpeg and mkvmerge plus two files in
+    /// `SUBX_PARITY_NATIVE` and `SUBX_PARITY_REFERENCE`; run explicitly:
+    /// `cargo test -- --ignored parity`. Identical stream MD5s pass outright;
+    /// otherwise the decoded video must reach SSIM >= 0.99.
+    #[tokio::test]
+    #[ignore = "needs ffmpeg/mkvmerge and SUBX_PARITY_NATIVE / SUBX_PARITY_REFERENCE files"]
+    async fn parity_with_reference_encode() {
+        let (Ok(native), Ok(reference)) = (
+            std::env::var("SUBX_PARITY_NATIVE"),
+            std::env::var("SUBX_PARITY_REFERENCE"),
+        ) else {
+            eprintln!("SUBX_PARITY_NATIVE / SUBX_PARITY_REFERENCE not set; nothing compared");
+            return;
+        };
+        let mkvmerge = tools::require_one(Tool::Mkvmerge).unwrap();
+        let (ffmpeg, _) = tools::ffmpeg_pair().unwrap();
+        let (a, b) = (Path::new(&native), Path::new(&reference));
+
+        let diff = container_diff(
+            &mkv_info(&mkvmerge, a).await.unwrap(),
+            &mkv_info(&mkvmerge, b).await.unwrap(),
+        );
+        assert!(diff.is_empty(), "container differences: {diff:?}");
+
+        let md5 = |file: &Path, map: &str| {
+            let out = std::process::Command::new(&ffmpeg)
+                .args(["-v", "error", "-i"])
+                .arg(file)
+                .args(["-map", map, "-c", "copy", "-f", "md5", "-"])
+                .output()
+                .expect("ffmpeg md5");
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let same_audio = md5(a, "0:a:0") == md5(b, "0:a:0");
+        if md5(a, "0:v:0") == md5(b, "0:v:0") {
+            eprintln!("video streams are bit-identical (audio identical: {same_audio})");
+            return;
+        }
+
+        let out = std::process::Command::new(&ffmpeg)
+            .args(["-v", "info", "-i"])
+            .arg(a)
+            .arg("-i")
+            .arg(b)
+            .args(["-lavfi", "[0:v][1:v]ssim", "-f", "null", "-"])
+            .output()
+            .expect("ffmpeg ssim");
+        let ssim = parse_ssim(&String::from_utf8_lossy(&out.stderr)).expect("ssim summary");
+        eprintln!("SSIM all = {ssim} (audio identical: {same_audio})");
+        assert!(ssim >= 0.99, "SSIM {ssim} below 0.99");
+    }
 
     fn native(encoder: &str, audio: AudioEncoder, codec: &str) -> Native {
         Native {
@@ -1044,7 +1232,7 @@ mod tests {
             height: 1080,
             fps: "24000/1001".into(),
             duration_s: 1422.0,
-            has_chapters: true,
+            chapter_entries: 6,
         }
     }
 
@@ -1105,10 +1293,21 @@ mod tests {
     fn builds_x265_aac_pipeline_with_frame_rate() {
         let n = native("x265", AudioEncoder::FfmpegAac, "aac-lc");
         let mut src = source();
-        src.has_chapters = false;
+        src.chapter_entries = 0;
         let steps = n.steps(&episode(), &src, Path::new("W")).unwrap();
         let names: Vec<_> = steps.iter().map(Step::name).collect();
         assert_eq!(names, ["video", "audio", "mux"]);
+        // Direct ffmpeg audio must not smuggle the source's chapters into the m4a.
+        assert!(
+            steps[1]
+                .render()
+                .contains("-map_chapters -1 -map_metadata -1 -c:a aac")
+        );
+        assert!(
+            steps[2]
+                .render()
+                .contains("--no-chapters --no-global-tags --language 0:jpn")
+        );
         let video = steps[0].render();
         assert!(
             video.contains("| x265 --y4m --input - --output "),

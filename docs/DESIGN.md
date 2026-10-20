@@ -3,9 +3,9 @@
 Status: phases 0 (CI and releases), 1 (quick wins), 2 (tools module),
 3 (episode identity) and 4 (native encode: `--engine native`, profiles, SVT-AV1
 and x265, Opus and the AAC chain, `-j`, stall watchdog, per-episode logs; the
-AV1+Opus reference episode reproduces StaxRip's output bit for bit) are
-implemented; phases 5–7 are pending. The default engine stays `staxrip` until
-phase 6. The current `encode` command drives StaxRip through its
+AV1+Opus reference episode reproduces StaxRip's output bit for bit) and
+6 (parity test, `native` is the default engine, StaxRip stays available as
+`--engine staxrip`) are implemented; phases 5 and 7 are pending. The current `encode` command drives StaxRip through its
 command line; this document describes the target architecture that removes
 that dependency while keeping the output equivalent, and the roadmap to get
 there. `AGENTS.md` conventions apply throughout.
@@ -385,8 +385,8 @@ crates reduce binary size and CI time without touching runtime behavior.
 
 ## Parity test against StaxRip
 
-Keep `--engine staxrip` until parity is proven, then encode one episode both
-ways and compare:
+Encode one episode both ways and compare (`cargo test -- --ignored parity`
+with `SUBX_PARITY_NATIVE` and `SUBX_PARITY_REFERENCE` pointing at the files):
 
 1. `mkvmerge -J`: identical track layout, dimensions, languages, flags, delay.
 2. `ffmpeg -i a.mkv -i b.mkv -lavfi "[0:v][1:v]ssim" -f null -` → SSIM ≥ 0.99
@@ -394,7 +394,8 @@ ways and compare:
 3. Audio: duration and `--sync` equal; loudness within 0.1 LU (`ebur128`).
 
 The test is a `#[ignore]`d end-to-end test that takes the two files as
-environment variables, so CI never needs the binaries.
+environment variables, so CI never needs the binaries. Identical stream MD5s
+pass outright; otherwise the decoded video must reach SSIM ≥ 0.99.
 
 Measured 2026-10-20 on the reference episode (11, template
 `Anime-480p.AV1.Opus96`, same SvtAv1EncApp/opusenc binaries): the native
@@ -428,7 +429,7 @@ folder the user provides.
 | 3 Episode identity | `common/episode.rs`; `extract`, `mux --batch-dir`, `encode` share it | unit table of 20+ real file names; old behavior preserved for `Ep01.id.ass` stems |
 | 4 Native encode | `--engine native` (default stays `staxrip` until phase 6), profiles, ffmpeg source, SVT-AV1 **and** x265, Opus **and** the AAC family (`aac_encoders` fallback chain, `qaac` install + Apple DLL check), mkvmerge, verify, `-j`, stall watchdog, per-episode log | one AV1+Opus and one HEVC+HE-AAC episode encode end to end and pass verify; a profile whose AAC encoder is missing fails at plan time with the install hint; `--dry-run` prints every command line |
 | 5 Fonts, chapters, VapourSynth, crop | `extract` fonts/chapters, `fonts` command, `source = "vapoursynth"`, `crop = "auto"`, `xhe-aac` via exhale | VS backend runs a resize-only script with identical SSIM to the ffmpeg backend; `cropdetect` result matches StaxRip's AutoCrop on the reference episode |
-| 6 Parity and switch | parity test, `--engine native` default, StaxRip engine kept as `--engine staxrip`, docs | SSIM ≥ 0.99 on the reference episode; `docs/USAGE.md` and `README.md` updated |
+| 6 Parity and switch | parity test, `--engine native` default, StaxRip engine kept as `--engine staxrip`, docs | SSIM ≥ 0.99 on the reference episode (measured: identical MD5); `docs/USAGE.md` and `README.md` updated |
 | 7 Optional | TUI progress (`ratatui`) or separate `subx-gui` crate | only if asked |
 
 ## Open questions

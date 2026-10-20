@@ -177,7 +177,7 @@ Reports per file: event count, min/max durations, average/max reading speed
 ### `encode` — batch-encode through StaxRip
 
 ```
-subx encode <SOURCE> <DEST> [--engine staxrip|native] [--only 10-13]
+subx encode <SOURCE> <DEST> [--engine native|staxrip] [--only 10-13]
               [--prefix "[GROUP]"] [--series S] [--tag "BD 480p AV1.Opus"]
               [--sub-lang id] [--audio-lang jpn] [--work-dir DIR] [--dry-run]
     staxrip:  [--template NAME] [--resolution 848x480] [--staxrip-dir DIR]
@@ -185,10 +185,11 @@ subx encode <SOURCE> <DEST> [--engine staxrip|native] [--only 10-13]
     native:   [--profile NAME] [-j N] [--stall-min 5]
 ```
 
-Two engines produce the same kind of file. `staxrip` (the default) drives an
-installed StaxRip through its command line; `native` runs ffmpeg, the encoder
-and mkvmerge itself from a `[encode.profiles.*]` entry — no StaxRip needed,
-episodes can run in parallel, and every command line is logged.
+Two engines produce the same file. `native` (the default) runs ffmpeg, the
+encoder and mkvmerge itself from a `[encode.profiles.*]` entry — no StaxRip
+needed, episodes can run in parallel, every command line is logged, and on
+the reference template its output is bit-identical to StaxRip's. `staxrip`
+drives an installed StaxRip through its command line instead.
 
 Windows only; needs StaxRip (its bundled MKVToolNix is used too). Every option
 except `--only`, `--series`, `--timeout-min` and the switches defaults to the
@@ -314,7 +315,7 @@ so secrets and machine paths belong there.
 | `[encode] resolution` | `""` | `WIDTHxHEIGHT` locked in StaxRip; empty keeps the template's size |
 | `[encode] audio_lang` / `sub_lang` | `"jpn"` / `"id"` | audio track kept; subtitle language fallback |
 | `[encode] work_dir` | temp | folder for per-episode work copies |
-| `[encode] engine` | `"staxrip"` | `staxrip` or `native` |
+| `[encode] engine` | `"native"` | `native` or `staxrip` |
 | `[encode] profile` | — | default `[encode.profiles.*]` entry for the native engine |
 | `[encode] jobs` / `stall_min` | `1` / `5` | native: concurrent episodes; minutes without output growth before a kill |
 | `[encode] aac_encoders` | `["qaac", "ffmpeg-fdk", "fdkaac", "ffmpeg-aac"]` | AAC encoder preference order |
