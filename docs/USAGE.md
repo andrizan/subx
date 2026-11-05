@@ -173,10 +173,11 @@ louder are found, and the offset that puts the most cue starts on those onsets
 wins. It is a plain energy measure, not a trained detector, so a loud music or
 effects onset counts like a voice, but it keeps working on dense, music-backed
 dialogue where an on/off speech detector calls nearly everything speech. Only
-dialogue cues take part: events with an Effect (karaoke and other generated
-typesetting), drawings, events over 20 s and styles far less used than the main
-one (signs, opening and ending lyrics) are ignored while matching but still
-move with the rest. The search covers ±`--max-shift` seconds (default 120) and
+dialogue cues take part: karaoke syllables (an Effect plus at most three
+characters of text), drawings, events over 20 s and styles with far less cue
+time than the main one (signs, opening and ending lyrics) are ignored while
+matching but still move with the rest. Time, not count: signs tracked frame by frame can be
+more numerous than the dialogue without adding up to much. The search covers ±`--max-shift` seconds (default 120) and
 moves every event by the same amount: there is no split or frame-rate
 correction, so a subtitle for a different cut of the episode only lines up where
 the cuts agree. Cue starts are lined up with speech onsets to within about

@@ -26,6 +26,9 @@ const MAX_CUE_MS: i64 = 20_000;
 /// reference subtitle; people time the same line a few frames apart.
 const START_TOLERANCE_BINS: usize = 10;
 
+/// An event with an Effect and no more text than this is a karaoke syllable.
+const GENERATED_MAX_CHARS: usize = 3;
+
 /// Offsets scored for the background statistics whatever window is searched
 /// (±120 s), so a narrow `--max-shift` cannot make a true peak look weak.
 const BACKGROUND_BINS: i64 = 12_000;
@@ -93,20 +96,22 @@ impl Onsets {
 
 /// Bins where the spoken cues of a subtitle start.
 ///
-/// Left out: empty events, ASS drawings, events over 20 s, events with an
-/// Effect (karaoke and other generated typesetting: a song can be hundreds of
-/// per-syllable lines) and styles far less used than the busiest one (signs,
-/// opening and ending lyrics, notes). SRT and WebVTT have one style, so every
-/// cue counts.
+/// Left out: empty events, ASS drawings, events over 20 s, karaoke syllables
+/// (an Effect plus at most three characters of text: a song can be hundreds of
+/// per-syllable lines; real dialogue that merely carries an Effect stays) and
+/// styles with far less cue time than the main one
+/// (signs, opening and ending lyrics, notes). Time, not count: signs tracked
+/// frame by frame are hundreds of 40 ms events and can outnumber the dialogue
+/// without adding up to much. SRT and WebVTT have one style, so every cue counts.
 pub fn cue_starts(events: &[Event]) -> Vec<usize> {
     let spoken: Vec<&Event> = events
         .iter()
         .filter(|e| e.end_ms > e.start_ms && e.end_ms - e.start_ms <= MAX_CUE_MS)
-        .filter(|e| e.effect.is_empty() && !is_drawing(&e.text) && !plaintext(&e.text).is_empty())
+        .filter(|e| !is_drawing(&e.text) && is_spoken(e))
         .collect();
-    let mut per_style: HashMap<&str, usize> = HashMap::new();
+    let mut per_style: HashMap<&str, i64> = HashMap::new();
     for e in &spoken {
-        *per_style.entry(e.style.as_str()).or_default() += 1;
+        *per_style.entry(e.style.as_str()).or_default() += e.end_ms - e.start_ms;
     }
     let busiest = per_style.values().copied().max().unwrap_or(0);
     spoken
@@ -114,6 +119,12 @@ pub fn cue_starts(events: &[Event]) -> Vec<usize> {
         .filter(|e| per_style[e.style.as_str()] * 5 >= busiest)
         .map(|e| (e.start_ms.max(0) / BIN_MS) as usize)
         .collect()
+}
+
+/// Has visible text, and is not a karaoke syllable.
+fn is_spoken(e: &Event) -> bool {
+    let text = plaintext(&e.text);
+    !text.is_empty() && (e.effect.is_empty() || text.chars().count() > GENERATED_MAX_CHARS)
 }
 
 /// ASS vector drawing (`{\p1}m 0 0 l ...`); `\pos(` is not one.
@@ -379,8 +390,10 @@ mod tests {
             ev(0, 600_000, "", "", "Subbed by someone"),
             ev(10_005, 10_012, "", "", "Short"),
             ev(11_000, 12_000, "", "fx", "k"),
+            ev(13_000, 14_000, "", "fx", "A real line"),
         ];
-        assert_eq!(cue_starts(&events), vec![100, 800, 1000]);
+        // The karaoke syllable goes; dialogue that merely carries an Effect stays.
+        assert_eq!(cue_starts(&events), vec![100, 800, 1000, 1300]);
     }
 
     #[test]
@@ -393,7 +406,7 @@ mod tests {
         for i in 0..6 {
             events.push(ev(
                 90_000 + i * 4000,
-                91_000 + i * 4000,
+                92_000 + i * 4000,
                 "Italics",
                 "",
                 "Inner",
@@ -410,5 +423,18 @@ mod tests {
             .map(|i| ev(i * 1000, i * 1000 + 500, "", "", "x"))
             .collect();
         assert_eq!(cue_starts(&srt).len(), 3);
+    }
+
+    #[test]
+    fn frame_tracked_signs_do_not_outweigh_the_dialogue() {
+        // 100 lines of dialogue (200 s) against 600 one-frame sign events
+        // (24 s): the signs are six times as many but a tenth of the time.
+        let mut events: Vec<Event> = (0..100)
+            .map(|i| ev(i * 5000, i * 5000 + 2000, "Dialogue", "", "Line"))
+            .collect();
+        events.extend((0..600).map(|i| ev(i * 800, i * 800 + 40, "Sign", "", "Shop")));
+        let starts = cue_starts(&events);
+        assert_eq!(starts.len(), 100);
+        assert!(starts.iter().all(|s| s % 500 == 0), "only dialogue starts");
     }
 }
