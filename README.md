@@ -11,6 +11,7 @@ Status: **complete** — 141 unit + 13 end-to-end tests, `clippy --all-targets -
 | Dependency | Needed for | Install |
 |---|---|---|
 | `ffmpeg` + `ffprobe` | everything media-related | `winget install ffmpeg` / `scoop install ffmpeg` |
+| MKVToolNix (`mkvmerge`, `mkvextract`) | `sync` on a video, `extract --fonts/--chapters`, the native `encode` | Windows x64: `subx tools install mkvmerge`; otherwise any install on `PATH` |
 | `yt-dlp` (optional) | `fetch` | `winget install yt-dlp` |
 | LibreTranslate server **or** AI API key (optional) | `translate` | `docker run -p 5000:5000 libretranslate/libretranslate` or set `OPENROUTER_API_KEY` |
 | StaxRip (Windows, optional; ships its own MKVToolNix) | `encode` | portable zip, point `--staxrip-dir` at it |
@@ -32,11 +33,11 @@ Shortcuts: `make build-release`, `make check`, `make run ARGS="..."`.
 
 | Command | What it does |
 |---|---|
-| `extract` | Subtitles (+ optional `--audio`, `--fonts`, `--chapters`) out of MKV/MP4 into `subs/`, `audio/`, `fonts/`, `chapters/` |
+| `extract` | Subtitles (+ optional `--audio`, `--fonts`, `--chapters`) out of MKV/MP4, one file or a folder, into `subs/`, `audio/`, `fonts/`, `chapters/` |
 | `fonts` | Which fonts the ASS scripts need, and whether each is attached, installed or missing |
 | `clean` | Scrub ASS junk, keep karaoke, normalize the font (`-r` for `subs/<lang>/`) |
 | `shift` | Shift timestamps ±ms, drop empty events (file or folder, in-place safe) |
-| `sync` | Retime automatically: the subtitles inside an `.mkv`, or an external subtitle given with its video; the offset is measured from the speech, low-confidence guesses are refused (`--dry-run`, folders pair by episode) |
+| `sync` | Retime automatically: the subtitles inside an `.mkv`, or an external subtitle given with its video; the offset is measured from the speech and low-confidence guesses are refused; a folder fixes what is off and skips what is right (`--dry-run`, `--in-place`, `-o`) |
 | `filter` | Delete lines matching keywords (regex, dry-run supported) |
 | `mux` | Merge video+audio+subs (softmux copy, `--hardsub` burn-in, `--batch-dir` seasons) |
 | `convert` | Convert `srt` ↔ `ass` ↔ `vtt` (timing preserved) |
@@ -52,8 +53,10 @@ Shortcuts: `make build-release`, `make check`, `make run ARGS="..."`.
 ```powershell
 subx --help
 subx extract "D:\Anime\Season1" -j 8 --audio
+subx extract Ep01.mkv                                    # a single video works too
 subx clean subs out -r --shift-ms -1500
 subx sync Ep01.mkv                                       # retime the subtitles inside the video
+subx sync "D:\Anime\Season1" --dry-run                  # a whole folder: look first, then --in-place
 subx sync Ep01.en.srt Ep01.mkv                           # or an external subtitle, with its video
 subx translate out out-id --engine ai --from en --to id
 subx stats out-id --cps 20

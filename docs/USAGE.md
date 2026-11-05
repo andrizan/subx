@@ -7,7 +7,9 @@ title: subx manual
 
 > Single binary for the full fansub pipeline: extract, clean, retime,
 > translate, QC, and mux.
-> Requires `ffmpeg` + `ffprobe` on `PATH` (or next to `subx.exe`).
+> Requires `ffmpeg` + `ffprobe` on `PATH` (or next to `subx.exe`). `sync` on a
+> video, `extract --fonts/--chapters` and `encode` also need MKVToolNix
+> (`subx tools check` shows what is missing).
 
 - [Install](#install)
 - [Typical workflows](#typical-workflows)
@@ -33,7 +35,8 @@ macOS arm64; unpack and put `subx` on `PATH`, then keep it current with
 `subx self-update` (see [`self-update`](#self-update--update-subx-itself)).
 Or from the repo root: `make build-release`, `make check`, `make install`.
 `ffmpeg` via `winget install ffmpeg` / `scoop install ffmpeg`;
-`yt-dlp` (for `fetch`) via `winget install yt-dlp`.
+`yt-dlp` (for `fetch`) via `winget install yt-dlp`; MKVToolNix is on `PATH` or,
+on Windows x64, `subx tools install mkvmerge`.
 
 ## Typical workflows
 
@@ -41,7 +44,7 @@ Or from the repo root: `make build-release`, `make check`, `make install`.
 
 ```powershell
 subx probe "Ep01.mkv"                                  # inspect first (metadata below)
-subx extract "." -j 8 --audio                          # subs/ + audio/
+subx extract "Ep01.mkv" --audio                        # subs/ + audio/ beside it
 subx clean subs out -r --shift-ms -1500                # -r walks subs/<lang>/
 subx filter out -k opening -k ending                   # drop recap/credit lines
 subx translate out out-id --engine ai --from en --to id --dry-run   # cost estimate
@@ -57,6 +60,16 @@ subx extract "Season1" -j 8
 subx clean "Season1\subs" "Season1\out" -r
 subx translate "Season1\out" "Season1\id" --engine ai --from en --to id
 subx mux --batch-dir "Season1" --out-dir "Season1_muxed" --title "MyFansub"
+```
+
+### Fix the timing of subtitles
+
+```powershell
+subx sync "Ep01.mkv" --dry-run                         # measure the subtitles inside the video, write nothing
+subx sync "Ep01.mkv" --in-place                        # fix them in the file
+subx sync "Ep01.id.srt" "Ep01.mkv"                     # an external subtitle with its video -> Ep01.id.synced.srt
+subx sync "Season1" --dry-run                          # a whole folder of videos: look first,
+subx sync "Season1" --in-place                         # then fix what is off and skip the rest
 ```
 
 ## Command reference
@@ -153,7 +166,9 @@ delays, negative advances).
   chapter and attachment is copied as it is: no re-encode, and the subtitle
   text is untouched. Tracks that are already in sync, below the confidence
   floor, or bitmap (PGS/VobSub) stay as they were; `--sub-track N` limits the
-  run to one track (0 = first). Needs ffmpeg and MKVToolNix.
+  run to one track (0 = first). Needs ffmpeg and MKVToolNix. Only Matroska
+  files can be rewritten; another container can still be the reference audio
+  of an external subtitle.
 - **An external subtitle with its video:** the video's audio is the reference.
   Pass an already-timed subtitle instead of a video when the audio is
   music-heavy, or to carry the timing of a good release over to another release
@@ -165,32 +180,50 @@ delays, negative advances).
 
 The result goes to `<name>.synced.<ext>` next to the input (`Ep01.mkv` →
 `Ep01.synced.mkv`) so the original is never touched; `-o` picks another path (a
-folder for a folder run) and `--in-place` overwrites the input. Everything is
-written through a temporary file, so an interrupted run leaves no half file.
-`.synced` copies are skipped by folder runs, and an input that is already in
-sync is not rewritten.
+folder for a folder run) and `--in-place` overwrites the input, which cannot be
+undone. Everything is written through a temporary file, so an interrupted run
+leaves no half file. `.synced` copies are skipped by folder runs.
+
+A folder run is a batch fix: what is out of time is corrected, what is already
+right is skipped and not rewritten, so large videos are not copied for nothing,
+`-o` or not. Each video gets a status line, a line per subtitle track, and a
+summary closes the run:
+
+| Status | Meaning |
+|---|---|
+| `[OK]` | at least one track was retimed and the file written (`[DRY RUN]` with `--dry-run`) |
+| `[IN SYNC]` | every measurable track is within 150 ms; nothing written |
+| `[SKIPPED]` | no track had enough confidence, or all were bitmap or unreadable; nothing written |
+| `[NO SUBTITLES]` | the video has no subtitle track |
+| `[FAILED]` | something went wrong (the message follows); the other videos carry on |
 
 What gets matched is where lines *start*: ffmpeg decodes one audio track
 (`--audio-track`, 0 = first), the moments where the voice band suddenly gets
 louder are found, and the offset that puts the most cue starts on those onsets
 wins. It is a plain energy measure, not a trained detector, so a loud music or
 effects onset counts like a voice, but it keeps working on dense, music-backed
-dialogue where an on/off speech detector calls nearly everything speech. Only
-dialogue cues take part: karaoke syllables (an Effect plus at most three
+dialogue where an on/off speech detector calls nearly everything speech.
+
+Only dialogue cues take part: karaoke syllables (an Effect plus at most three
 characters of text), drawings, events over 20 s and styles with far less cue
 time than the main one (signs, opening and ending lyrics) are ignored while
-matching but still move with the rest. Time, not count: signs tracked frame by frame can be
-more numerous than the dialogue without adding up to much. The search covers ±`--max-shift` seconds (default 120) and
-moves every event by the same amount: there is no split or frame-rate
-correction, so a subtitle for a different cut of the episode only lines up where
-the cuts agree. Cue starts are lined up with speech onsets to within about
-100 ms, and offsets of up to 150 ms count as already in sync.
+matching but still move with the rest. Time, not count: signs tracked frame by
+frame can be more numerous than the dialogue without adding up to much.
+
+The search covers ±`--max-shift` seconds (default 120) and moves every event by
+the same amount: there is no split or frame-rate correction, so a subtitle for
+a different cut of the episode only lines up where the cuts agree. Cue starts
+are lined up with speech onsets to within about 100 ms, and offsets of up to
+150 ms count as already in sync.
 
 Every result carries a confidence from 0 to 1 (how far the best offset stands
 out from chance) and the number of cue starts it was based on. Below
 `--min-confidence` the file or track is **left alone**; a single-file run then
 exits with an error and a folder run counts it as skipped. `0` always retimes.
-`--dry-run` prints the offsets and writes nothing.
+`--dry-run` prints the offsets and writes nothing. When a file is refused
+unexpectedly, `subx -vv sync <file> --dry-run` also prints the search statistics
+(cue starts used, best offset, peak height over the background); that line is
+the one to share.
 
 ### `filter` — delete keyword lines
 
