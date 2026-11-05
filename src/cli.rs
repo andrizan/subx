@@ -30,6 +30,8 @@ pub enum Commands {
     Clean(crate::commands::clean::CleanArgs),
     /// Shift timestamps by ±ms and drop empty events.
     Shift(crate::commands::shift::ShiftArgs),
+    /// Retime a subtitle automatically against a video's speech or a timed subtitle.
+    Sync(crate::commands::sync::SyncArgs),
     /// Delete lines containing keywords.
     Filter(crate::commands::filter::FilterArgs),
     /// Merge video+audio+subs (softmux copy / hardsub burn).
@@ -52,4 +54,7 @@ pub enum Commands {
     Fonts(crate::commands::fonts::FontsArgs),
     /// Terminal UI: edit encode profiles, check tools, run encodes with a live log.
     Tui(crate::commands::tui::TuiArgs),
+    /// Update subx itself from the latest GitHub release.
+    #[command(name = "self-update", alias = "update")]
+    SelfUpdate(crate::commands::self_update::SelfUpdateArgs),
 }

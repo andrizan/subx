@@ -7,8 +7,10 @@ pub mod filter;
 pub mod fonts;
 pub mod mux;
 pub mod probe;
+pub mod self_update;
 pub mod shift;
 pub mod stats;
+pub mod sync;
 pub mod tools;
 pub mod translate;
 pub mod tui;
@@ -26,6 +28,7 @@ pub async fn dispatch(cli: Cli, cfg: AppConfig) -> Result<()> {
         Commands::Extract(a) => extract::run(a).await,
         Commands::Clean(a) => clean::run(a).await,
         Commands::Shift(a) => shift::run(a).await,
+        Commands::Sync(a) => sync::run(a).await,
         Commands::Filter(a) => filter::run(a).await,
         Commands::Mux(a) => mux::run(a).await,
         Commands::Convert(a) => convert::run(a).await,
@@ -37,5 +40,6 @@ pub async fn dispatch(cli: Cli, cfg: AppConfig) -> Result<()> {
         Commands::Tools(a) => tools::run(a, &cfg).await,
         Commands::Fonts(a) => fonts::run(a).await,
         Commands::Tui(a) => tui::run(a, cfg, config_arg).await,
+        Commands::SelfUpdate(a) => self_update::run(a).await,
     }
 }

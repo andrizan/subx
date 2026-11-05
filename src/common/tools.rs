@@ -427,7 +427,7 @@ impl Resolver {
 
 /// First file named `exe` under `root` (sorted walk, so `SvtAv1EncApp/` wins
 /// over `SvtAv1EncApp-Essential/` in a StaxRip bundle).
-fn find_under(root: &Path, exe: &str, max_depth: usize) -> Option<PathBuf> {
+pub(crate) fn find_under(root: &Path, exe: &str, max_depth: usize) -> Option<PathBuf> {
     if !root.is_dir() {
         return None;
     }
@@ -573,7 +573,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// Download `url` to `dest` while hashing it; returns the SHA-256 hex digest.
-async fn download(client: &reqwest::Client, url: &str, dest: &Path) -> Result<String> {
+pub(crate) async fn download(client: &reqwest::Client, url: &str, dest: &Path) -> Result<String> {
     let mut resp = client
         .get(url)
         .send()

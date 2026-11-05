@@ -29,7 +29,8 @@ cargo build --release       # or binary at target/release/subx.exe
 
 Prebuilt archives (`subx-<version>-<target>.zip` / `.tar.xz` with `SHA256SUMS`)
 are on the Releases page for Windows x64/arm64, Linux x64/arm64 (static) and
-macOS arm64; unpack and put `subx` on `PATH`.
+macOS arm64; unpack and put `subx` on `PATH`, then keep it current with
+`subx self-update` (see [`self-update`](#self-update--update-subx-itself)).
 Or from the repo root: `make build-release`, `make check`, `make install`.
 `ffmpeg` via `winget install ffmpeg` / `scoop install ffmpeg`;
 `yt-dlp` (for `fetch`) via `winget install yt-dlp`.
@@ -127,6 +128,43 @@ subx shift <IN> <OUT> --shift-ms -1500 [--no-clean] [--keep-tag-only]
 Positive delays, negative advances (clamped at zero). By default, events
 without visible text are deleted (tag-only events too, unless `--keep-tag-only`
 or `--no-clean`). Folder runs mirror the input structure and are in-place safe.
+
+### `sync` — retime automatically
+
+```
+subx sync <IN> <OUT> --ref <VIDEO|AUDIO|SUBTITLE> [--audio-track 0]
+             [--max-shift 120] [--min-confidence 0.2] [--dry-run]
+             [-r] [--ext .srt,.ass,.ssa,.vtt]
+```
+
+Like `shift`, but the offset is measured instead of typed: `sync` finds the one
+time shift that lines the subtitle up with the reference and applies it
+(positive delays, negative advances; `<OUT>` may equal `<IN>`). Two kinds of
+reference:
+
+- **A video or audio file.** ffmpeg decodes one audio track (`--audio-track`,
+  0 = first) and an energy-based detector marks where speech is; the offset is
+  the one where the subtitle's cues cover that speech best. It is a plain
+  detector, not a trained one, so loud background music blurs it.
+- **An already-timed subtitle** (`.srt`/`.ass`/`.ssa`/`.vtt`): the cues of the
+  two files are lined up. Use it when the audio is music-heavy, or to carry the
+  timing of a good release over to another release of the same episode.
+
+In folder mode `--ref` is a folder too and files pair by episode number
+(`Show - 01.ass` ↔ `Show - 01.mkv`; a video is preferred over a subtitle of the
+same episode). Files without a reference are listed and left alone.
+
+The search covers ±`--max-shift` seconds (default 120) and the result moves
+every event by the same amount: there is no split or frame-rate correction, so
+a subtitle for a different cut of the episode only lines up where the cuts
+agree. Events without text, drawings and events longer than 20 s are ignored
+while matching but are still shifted.
+
+Every result carries a confidence from 0 to 1 (how far the best offset stands
+out from chance) and the share of cue time that falls on speech. Below
+`--min-confidence` the file is **not written** and a single-file run exits with
+an error (a folder run counts it under "Low confidence"); `0` always writes.
+`--dry-run` prints the offsets and writes nothing, so `<OUT>` can be left out.
 
 ### `filter` — delete keyword lines
 
@@ -349,6 +387,29 @@ unpacks `.zip`/`.7z` (`.tar.xz` through the system `tar` on Linux), and
 re-probes the binary. Nothing is forked, rebuilt or mirrored. VapourSynth is
 link-only (it needs Python and plugins; point `[tools] staxrip_dir` at a bundle).
 
+### `self-update` — update subx itself
+
+```
+subx self-update [--check] [--to v1.0.0] [--force] [--no-verify]
+```
+
+Alias: `subx update`. Looks up the latest GitHub Release of `andrizan/subx`,
+downloads the archive for this OS and CPU, checks it against the release's
+`SHA256SUMS`, runs the new binary once to confirm it starts and reports the
+right version, and only then replaces the running executable. On Windows the
+previous binary stays beside it as `subx.exe.old` and is removed by the next
+update. The folder holding `subx` must be writable.
+
+- `--check` only reports whether a newer release exists.
+- `--to <TAG>` installs that release instead of the latest, older ones too
+  (a rollback).
+- `--force` reinstalls even when already on that version; `--no-verify` skips
+  the checksum.
+
+Prebuilt targets: Windows x64/arm64, Linux x64/arm64, macOS arm64. A copy
+installed with `cargo install` is replaced by the prebuilt one, so
+`cargo install --list` stops matching it.
+
 ## Configuration
 
 Optional `subx.toml` (next to the binary and in the current directory, or one
@@ -426,4 +487,6 @@ token estimates first.
 | `encode`: `StaxRip is still running` | finish/close StaxRip first, or `--allow-running` |
 | `encode`: `Output does not match: resolution=...` | the template's size won; check `--resolution` and the StaxRip log in `Settings\Log Files` |
 | `clean` skipped `subs/en/` | add `-r` to recurse into language subfolders |
+| `sync`: `confidence … is below --min-confidence` | the subtitle does not match that audio (wrong episode or cut, or music drowns the speech): try another `--audio-track`, a timed subtitle as `--ref`, or run `--dry-run --min-confidence 0` to see the guess |
+| `self-update`: `cannot write to …` | the folder holding `subx` is not writable; re-run with the permissions to write there |
 | mojibake input | files are read as UTF-8; convert legacy encodings first (planned: auto-detect) |

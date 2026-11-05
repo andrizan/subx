@@ -7,6 +7,7 @@ pub mod fonts;
 pub mod shift;
 pub mod srt;
 pub mod stats;
+pub mod sync;
 pub mod time;
 pub mod vtt;
 
