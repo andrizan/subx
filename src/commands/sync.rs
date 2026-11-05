@@ -879,6 +879,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs ffmpeg and mkvmerge"]
     async fn e2e_retimes_the_embedded_subtitle_of_an_mkv() {
+        if tools::require(&[Tool::Mkvmerge]).is_err() {
+            eprintln!("MKVToolNix not found; skipping");
+            return;
+        }
         let (ffmpeg, _) = tools::ffmpeg_pair().expect("ffmpeg missing");
         let dir = tempfile::tempdir().unwrap();
 
