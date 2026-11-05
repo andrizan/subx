@@ -75,11 +75,14 @@ file tags. `--json` dumps raw ffprobe JSON for scripting.
 ### `extract` — subtitles (+ audio) out of video
 
 ```
-subx extract <FOLDER> [--out subs] [-j 8] [--ext mkv,mp4,mka] [--overwrite]
+subx extract <FILE|FOLDER> [--out subs] [-j 8] [--ext mkv,mp4,mka] [--overwrite]
                         [--audio] [--audio-out audio]
                         [--fonts] [--fonts-out fonts] [--chapters] [--chapters-out chapters]
 ```
 
+- Takes one video file or a folder of videos. A single file is read as it is
+  (whatever its extension) and the default output folders (`subs`, `audio`,
+  `fonts`, `chapters`) are created beside it.
 - Probes every video with ffprobe; Indonesian (`id`) goes to the output root,
   other languages to `<out>/<lang>/` as `<name>.S<index>[.<title>].<lang>.<ext>`.
 - `--audio` also copies audio tracks (no re-encode) to `--audio-out` as

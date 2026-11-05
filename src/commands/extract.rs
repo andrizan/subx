@@ -12,13 +12,14 @@ use crate::common::tools::Tool;
 use crate::common::{fs, lang, tools};
 use crate::media::{mkv, probe};
 
-/// `subx extract <FOLDER>` — extract subtitles (and optionally audio).
+/// `subx extract <FOLDER|FILE>` — extract subtitles (and optionally audio).
 #[derive(Debug, Args)]
 pub struct ExtractArgs {
-    /// Folder containing video files.
+    /// A video file, or a folder containing video files.
+    #[arg(value_name = "FILE|FOLDER")]
     pub folder: PathBuf,
 
-    /// Output folder (default: `<FOLDER>/subs`).
+    /// Output folder (default: `subs` next to the video, or inside the folder).
     #[arg(long)]
     pub out: Option<PathBuf>,
 
@@ -38,7 +39,7 @@ pub struct ExtractArgs {
     #[arg(long)]
     pub audio: bool,
 
-    /// Audio output folder (default: `<FOLDER>/audio`).
+    /// Audio output folder (default: `audio` next to the video, or inside the folder).
     #[arg(long)]
     pub audio_out: Option<PathBuf>,
 
@@ -46,7 +47,7 @@ pub struct ExtractArgs {
     #[arg(long)]
     pub fonts: bool,
 
-    /// Fonts output folder (default: `<FOLDER>/fonts`).
+    /// Fonts output folder (default: `fonts` next to the video, or inside the folder).
     #[arg(long)]
     pub fonts_out: Option<PathBuf>,
 
@@ -54,7 +55,7 @@ pub struct ExtractArgs {
     #[arg(long)]
     pub chapters: bool,
 
-    /// Chapters output folder (default: `<FOLDER>/chapters`).
+    /// Chapters output folder (default: `chapters` next to the video, or inside the folder).
     #[arg(long)]
     pub chapters_out: Option<PathBuf>,
 }
@@ -354,17 +355,27 @@ struct Targets {
 pub async fn run(args: ExtractArgs) -> Result<()> {
     let (ffmpeg, ffprobe) = tools::ffmpeg_pair()?;
 
-    if !args.folder.is_dir() {
-        anyhow::bail!("Folder not found: {}", args.folder.display());
-    }
-    let out_base = args.out.clone().unwrap_or_else(|| args.folder.join("subs"));
+    // A single video works like a folder holding only that video: the default
+    // output folders sit next to it.
+    let single = args.folder.is_file();
+    let base = if single {
+        args.folder
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default()
+    } else if args.folder.is_dir() {
+        args.folder.clone()
+    } else {
+        anyhow::bail!(
+            "Not found: {} (give a video file or a folder of videos)",
+            args.folder.display()
+        );
+    };
+    let out_base = args.out.clone().unwrap_or_else(|| base.join("subs"));
     std::fs::create_dir_all(&out_base)
         .with_context(|| format!("cannot create {}", out_base.display()))?;
     let audio_base = if args.audio {
-        let dir = args
-            .audio_out
-            .clone()
-            .unwrap_or_else(|| args.folder.join("audio"));
+        let dir = args.audio_out.clone().unwrap_or_else(|| base.join("audio"));
         std::fs::create_dir_all(&dir)
             .with_context(|| format!("cannot create {}", dir.display()))?;
         Some(dir)
@@ -377,7 +388,7 @@ pub async fn run(args: ExtractArgs) -> Result<()> {
             if !on {
                 return Ok(None);
             }
-            let dir = custom.clone().unwrap_or_else(|| args.folder.join(name));
+            let dir = custom.clone().unwrap_or_else(|| base.join(name));
             std::fs::create_dir_all(&dir)
                 .with_context(|| format!("cannot create {}", dir.display()))?;
             Ok(Some(dir))
@@ -399,17 +410,22 @@ pub async fn run(args: ExtractArgs) -> Result<()> {
     });
 
     let exts = parse_exts(&args.ext);
-    let mut files: Vec<PathBuf> = std::fs::read_dir(&args.folder)
-        .with_context(|| format!("cannot read {}", args.folder.display()))?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| {
-            p.is_file()
-                && p.extension()
-                    .and_then(|e| e.to_str())
-                    .map(|e| exts.contains(&e.to_lowercase()))
-                    .unwrap_or(false)
-        })
-        .collect();
+    // A file named on the command line is taken as it is, whatever its extension.
+    let mut files: Vec<PathBuf> = if single {
+        vec![args.folder.clone()]
+    } else {
+        std::fs::read_dir(&args.folder)
+            .with_context(|| format!("cannot read {}", args.folder.display()))?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| {
+                p.is_file()
+                    && p.extension()
+                        .and_then(|e| e.to_str())
+                        .map(|e| exts.contains(&e.to_lowercase()))
+                        .unwrap_or(false)
+            })
+            .collect()
+    };
     files.sort();
 
     if files.is_empty() {
@@ -1025,6 +1041,50 @@ mod tests {
         })
         .await
         .expect("repeat run should succeed (all skipped)");
+    }
+
+    /// A single video can be named directly: only it is read, and the default
+    /// output folders land beside it. Needs ffmpeg/ffprobe binaries.
+    #[tokio::test]
+    #[ignore = "needs ffmpeg/ffprobe binaries"]
+    async fn e2e_extract_a_single_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let video = mux_episode(dir.path(), "Show - 05 [480p]");
+        mux_episode(dir.path(), "Show - 06 [480p]"); // must be left alone
+        let args = |folder: PathBuf| ExtractArgs {
+            folder,
+            out: None,
+            jobs: 8,
+            ext: "mkv".to_string(),
+            overwrite: false,
+            audio: true,
+            audio_out: None,
+            fonts: false,
+            fonts_out: None,
+            chapters: false,
+            chapters_out: None,
+        };
+        run(args(video)).await.expect("extract failed");
+
+        let subs = dir.path().join("subs");
+        assert_eq!(count_ext(&subs, "srt"), 1, "one id sub in the root");
+        assert_eq!(count_ext(&subs.join("en"), "srt"), 1);
+        assert_eq!(list_names(&dir.path().join("audio")).len(), 1);
+        // Nothing was written for the other episode.
+        let written: Vec<String> = walkdir::WalkDir::new(&subs)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(written.iter().all(|n| n.contains("05")), "{written:?}");
+
+        // A path that is neither a file nor a folder says so.
+        let err = run(args(dir.path().join("nope.mkv")))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Not found"), "{err}");
     }
 
     /// Fonts (deduplicated) and chapters out of MKVs built with ffmpeg.
