@@ -1,6 +1,7 @@
 //! Matroska facts from `mkvmerge -J`, the parts ffprobe reports poorly:
 //! per-track start offsets, attachments and chapter editions.
 
+use std::ffi::OsString;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -18,6 +19,117 @@ pub async fn info(mkvmerge: &Path, file: &Path) -> Result<Value> {
         anyhow::bail!("mkvmerge -J failed for {}", file.display());
     }
     serde_json::from_slice(&out.stdout).with_context(|| "cannot parse mkvmerge JSON")
+}
+
+/// One subtitle track as listed by `mkvmerge -J`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubTrack {
+    /// mkvmerge track id, the number `--sync` takes.
+    pub id: u64,
+    /// Position among the file's subtitle tracks, i.e. ffmpeg's `-map 0:s:N`.
+    pub ordinal: u32,
+    pub codec_id: String,
+    pub language: String,
+    pub name: String,
+}
+
+impl SubTrack {
+    /// Extension a text track can be extracted as; `None` for bitmap subtitles.
+    pub fn text_ext(&self) -> Option<&'static str> {
+        let id = self.codec_id.to_ascii_uppercase();
+        match id.as_str() {
+            "S_TEXT/ASS" | "S_TEXT/SSA" | "S_ASS" | "S_SSA" => Some("ass"),
+            s if s.starts_with("S_TEXT/") => Some("srt"),
+            _ => None,
+        }
+    }
+
+    /// `[ind] Indonesian (ASS)` for messages.
+    pub fn label(&self) -> String {
+        let codec = self.codec_id.rsplit('/').next().unwrap_or(&self.codec_id);
+        let lang = if self.language.is_empty() {
+            "und"
+        } else {
+            &self.language
+        };
+        if self.name.is_empty() {
+            format!("[{lang}] ({codec})")
+        } else {
+            format!("[{lang}] {} ({codec})", self.name)
+        }
+    }
+}
+
+/// Subtitle tracks in file order.
+pub fn subtitle_tracks(info: &Value) -> Vec<SubTrack> {
+    let text = |v: &Value| v.as_str().unwrap_or("").to_string();
+    info["tracks"]
+        .as_array()
+        .map(|tracks| {
+            tracks
+                .iter()
+                .filter(|t| t["type"].as_str() == Some("subtitles"))
+                .enumerate()
+                .filter_map(|(ordinal, t)| {
+                    let p = &t["properties"];
+                    Some(SubTrack {
+                        id: t["id"].as_u64()?,
+                        ordinal: ordinal as u32,
+                        codec_id: text(&p["codec_id"]),
+                        language: text(&p["language"]),
+                        name: text(&p["track_name"]),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// mkvmerge arguments that copy `input` to `output` unchanged except for a
+/// constant delay (ms, negative = earlier) on the listed `(track id, delay)`s.
+fn retime_args(input: &Path, output: &Path, delays: &[(u64, i64)]) -> Vec<OsString> {
+    let mut args: Vec<OsString> = vec!["-o".into(), output.into()];
+    for (id, ms) in delays {
+        args.push("--sync".into());
+        args.push(format!("{id}:{ms}").into());
+    }
+    args.push(input.into());
+    args
+}
+
+/// Remux `input` to `output` with the given subtitle delays; every stream is
+/// copied, chapters and attachments carry over. Exit code 1 means warnings only.
+pub async fn retime(
+    mkvmerge: &Path,
+    input: &Path,
+    output: &Path,
+    delays: &[(u64, i64)],
+) -> Result<()> {
+    let out = tokio::process::Command::new(mkvmerge)
+        .args(retime_args(input, output, delays))
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output()
+        .await
+        .with_context(|| "cannot start mkvmerge")?;
+    if out.status.code().unwrap_or(2) >= 2 {
+        let text = String::from_utf8_lossy(&out.stdout);
+        let detail: Vec<&str> = text
+            .lines()
+            .filter(|l| l.starts_with("Error"))
+            .take(3)
+            .collect();
+        anyhow::bail!(
+            "mkvmerge failed for {}: {}",
+            input.display(),
+            if detail.is_empty() {
+                "see mkvmerge output".to_string()
+            } else {
+                detail.join(" | ")
+            }
+        );
+    }
+    Ok(())
 }
 
 /// Total chapter entries across all editions.
@@ -84,5 +196,44 @@ mod tests {
         );
         assert_eq!(fonts[0].0, 1);
         assert!(font_attachments(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn lists_subtitle_tracks_in_file_order() {
+        let info = json!({"tracks": [
+            {"id": 0, "type": "video", "properties": {"codec_id": "V_MPEGH/ISO/HEVC"}},
+            {"id": 1, "type": "audio", "properties": {"codec_id": "A_OPUS", "language": "jpn"}},
+            {"id": 2, "type": "subtitles", "properties": {
+                "codec_id": "S_TEXT/ASS", "language": "ind", "track_name": "Indonesian"}},
+            {"id": 3, "type": "subtitles", "properties": {"codec_id": "S_HDMV/PGS"}},
+            {"id": 5, "type": "subtitles", "properties": {
+                "codec_id": "S_TEXT/UTF8", "language": "eng"}},
+        ]});
+        let tracks = subtitle_tracks(&info);
+        let ids: Vec<(u64, u32)> = tracks.iter().map(|t| (t.id, t.ordinal)).collect();
+        // mkvmerge ids skip other track types; ordinals count subtitles only.
+        assert_eq!(ids, [(2, 0), (3, 1), (5, 2)]);
+        assert_eq!(tracks[0].text_ext(), Some("ass"));
+        assert_eq!(tracks[1].text_ext(), None);
+        assert_eq!(tracks[2].text_ext(), Some("srt"));
+        assert_eq!(tracks[0].label(), "[ind] Indonesian (ASS)");
+        assert_eq!(tracks[1].label(), "[und] (PGS)");
+        assert!(subtitle_tracks(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn retime_args_delay_only_the_listed_tracks() {
+        let args = retime_args(
+            Path::new("in.mkv"),
+            Path::new("out.mkv"),
+            &[(2, 2370), (5, -1200)],
+        );
+        let args: Vec<&str> = args.iter().map(|a| a.to_str().unwrap()).collect();
+        assert_eq!(
+            args,
+            [
+                "-o", "out.mkv", "--sync", "2:2370", "--sync", "5:-1200", "in.mkv"
+            ]
+        );
     }
 }

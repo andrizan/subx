@@ -30,7 +30,7 @@ pub enum Commands {
     Clean(crate::commands::clean::CleanArgs),
     /// Shift timestamps by ±ms and drop empty events.
     Shift(crate::commands::shift::ShiftArgs),
-    /// Retime a subtitle automatically against a video's speech or a timed subtitle.
+    /// Retime subtitles automatically: the ones inside a video, or an external file with its video.
     Sync(crate::commands::sync::SyncArgs),
     /// Delete lines containing keywords.
     Filter(crate::commands::filter::FilterArgs),

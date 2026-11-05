@@ -4,7 +4,7 @@ All-in-one fansub toolkit in a single Rust binary: extract subtitles/audio from
 video, clean and retime them, translate via LibreTranslate or any
 OpenAI-compatible AI model, QC the result, and mux it back.
 
-Status: **complete** — 131 unit + 11 end-to-end tests, `clippy --all-targets -D warnings` clean.
+Status: **complete** — 141 unit + 12 end-to-end tests, `clippy --all-targets -D warnings` clean.
 
 ## Requirements
 
@@ -36,7 +36,7 @@ Shortcuts: `make build-release`, `make check`, `make run ARGS="..."`.
 | `fonts` | Which fonts the ASS scripts need, and whether each is attached, installed or missing |
 | `clean` | Scrub ASS junk, keep karaoke, normalize the font (`-r` for `subs/<lang>/`) |
 | `shift` | Shift timestamps ±ms, drop empty events (file or folder, in-place safe) |
-| `sync` | Retime automatically: measures the offset against a video's speech or an already-timed subtitle, refuses low-confidence guesses (`--dry-run`, folder mode pairs by episode) |
+| `sync` | Retime automatically: the subtitles inside an `.mkv`, or an external subtitle given with its video; the offset is measured from the speech, low-confidence guesses are refused (`--dry-run`, folders pair by episode) |
 | `filter` | Delete lines matching keywords (regex, dry-run supported) |
 | `mux` | Merge video+audio+subs (softmux copy, `--hardsub` burn-in, `--batch-dir` seasons) |
 | `convert` | Convert `srt` ↔ `ass` ↔ `vtt` (timing preserved) |
@@ -53,7 +53,8 @@ Shortcuts: `make build-release`, `make check`, `make run ARGS="..."`.
 subx --help
 subx extract "D:\Anime\Season1" -j 8 --audio
 subx clean subs out -r --shift-ms -1500
-subx sync Ep01.en.srt Ep01.synced.srt --ref Ep01.mkv     # offset found from the audio
+subx sync Ep01.mkv                                       # retime the subtitles inside the video
+subx sync Ep01.en.srt Ep01.mkv                           # or an external subtitle, with its video
 subx translate out out-id --engine ai --from en --to id
 subx stats out-id --cps 20
 subx mux --video Ep01.mkv --subs out\Ep01.id.ass -o Ep01_FANSUB.mkv

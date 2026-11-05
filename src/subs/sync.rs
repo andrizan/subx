@@ -149,11 +149,23 @@ fn fold_overlap(
     (sum, hi - lo)
 }
 
-/// `matches - mismatches` for one lag; bins outside the overlap score 0.
-fn score(speech: &Bits, subs: &Bits, lag: i64) -> i64 {
+/// `(matches - mismatches, overlap length)` for one lag; bins outside the
+/// overlap score 0.
+fn score(speech: &Bits, subs: &Bits, lag: i64) -> (i64, i64) {
     let (matches, overlap) = fold_overlap(speech, subs, lag, |a, b, m| (!(a ^ b) & m).count_ones());
-    2 * matches - overlap
+    (2 * matches - overlap, overlap)
 }
+
+/// Offsets scored for the background statistics whatever window is searched
+/// (±120 s), so a narrow `--max-shift` cannot make a true peak look weak.
+const BACKGROUND_BINS: i64 = 12_000;
+
+/// Offsets up to this size (a bit under one 24 fps frame) are measurement
+/// noise from the detector's 10 ms edges, not a timing error worth fixing.
+pub const IN_SYNC_MS: i64 = 40;
+
+/// Offsets this close to the winner are its own shoulder, not background (3 s).
+const PEAK_GUARD_BINS: i64 = 300;
 
 /// Result of an offset search.
 #[derive(Debug, Clone, PartialEq)]
@@ -168,11 +180,18 @@ pub struct Alignment {
     pub coverage: f64,
 }
 
-/// Map a peak's height in standard deviations to 0..1: 4σ and below is 0 (unrelated
-/// dialogue-like signals peak at about 4.3σ by chance, measured over 30 pairs),
-/// 12σ and above is 1 (an exact match).
+impl Alignment {
+    /// The subtitle already lines up, within [`IN_SYNC_MS`].
+    pub fn in_sync(&self) -> bool {
+        self.shift_ms.abs() <= IN_SYNC_MS
+    }
+}
+
+/// Map a peak's height in standard deviations to 0..1: 5σ and below is 0 (unrelated
+/// dialogue-like signals peaked at 4.6σ at most over 30 pairs of 12 minutes),
+/// 15σ and above is 1 (a clean match of an episode-length signal).
 pub fn confidence(peak_sigma: f64) -> f64 {
-    ((peak_sigma - 4.0) / 8.0).clamp(0.0, 1.0)
+    ((peak_sigma - 5.0) / 10.0).clamp(0.0, 1.0)
 }
 
 /// Best offset within `±max_shift_ms` that moves `subs` onto `reference`.
@@ -184,26 +203,34 @@ pub fn align(reference: &Bits, subs: &Bits, max_shift_ms: i64) -> Result<Alignme
         bail!("the subtitle has no timed text to align");
     }
     let max_lag = (max_shift_ms / BIN_MS).max(1);
-    let scores: Vec<i64> = (-max_lag..=max_lag)
+    let scan = max_lag.max(BACKGROUND_BINS);
+    let scored: Vec<(i64, i64)> = (-scan..=scan)
         .map(|lag| score(reference, subs, lag))
         .collect();
 
-    // Highest score; ties go to the offset closest to zero.
-    let (best_idx, best) = scores
+    // Highest score within the searched window; ties go to the offset closest to zero.
+    let (best_idx, best) = scored
         .iter()
         .enumerate()
-        .max_by_key(|&(i, &s)| (s, Reverse((i as i64 - max_lag).abs())))
-        .map(|(i, &s)| (i, s))
+        .filter(|&(i, _)| (i as i64 - scan).abs() <= max_lag)
+        .max_by_key(|&(i, &(s, _))| (s, Reverse((i as i64 - scan).abs())))
+        .map(|(i, &(s, _))| (i, s))
         .expect("at least one lag is scored");
-    let lag = best_idx as i64 - max_lag;
+    let lag = best_idx as i64 - scan;
 
-    let n = scores.len() as f64;
-    let mean = scores.iter().map(|&s| s as f64).sum::<f64>() / n;
-    let var = scores
+    // How far the peak stands above the scores of unrelated offsets: every
+    // scored offset that overlaps at all and is not the peak's own shoulder.
+    let background: Vec<f64> = scored
         .iter()
-        .map(|&s| (s as f64 - mean).powi(2))
-        .sum::<f64>()
-        / n;
+        .enumerate()
+        .filter(|&(i, &(_, overlap))| {
+            overlap > 0 && (i as i64 - best_idx as i64).abs() > PEAK_GUARD_BINS
+        })
+        .map(|(_, &(s, _))| s as f64)
+        .collect();
+    let n = background.len() as f64;
+    let mean = background.iter().sum::<f64>() / n.max(1.0);
+    let var = background.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / n.max(1.0);
     let peak_sigma = if var > 0.0 {
         (best as f64 - mean) / var.sqrt()
     } else {
@@ -336,6 +363,32 @@ mod tests {
             let found = align(&reference, &subs, 120_000).unwrap();
             assert!(found.confidence < 0.1, "seed {seed}: {found:?}");
         }
+    }
+
+    #[test]
+    fn a_narrow_search_window_does_not_weaken_the_peak() {
+        let speech = dialogue(21, 10);
+        let reference = Bits::from_ranges(speech.clone());
+        let subs = Bits::from_ranges(shifted(&speech, -250));
+        let wide = align(&reference, &subs, 120_000).unwrap();
+        let narrow = align(&reference, &subs, 5_000).unwrap();
+        assert_eq!(narrow.shift_ms, 2500);
+        assert_eq!(wide.shift_ms, narrow.shift_ms);
+        // The statistics come from the same fixed background either way.
+        assert!((wide.peak_sigma - narrow.peak_sigma).abs() < 1e-9);
+        assert!(narrow.confidence > 0.9, "{narrow:?}");
+    }
+
+    #[test]
+    fn small_offsets_count_as_in_sync() {
+        let at = |shift_ms| Alignment {
+            shift_ms,
+            peak_sigma: 20.0,
+            confidence: 1.0,
+            coverage: 1.0,
+        };
+        assert!(at(0).in_sync() && at(10).in_sync() && at(-40).in_sync());
+        assert!(!at(50).in_sync() && !at(-2500).in_sync());
     }
 
     #[test]

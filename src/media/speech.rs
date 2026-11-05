@@ -137,6 +137,29 @@ pub async fn detect(ffmpeg: &Path, media: &Path, audio_track: u32) -> Result<Vec
     Ok(speech_ranges(&db))
 }
 
+/// 16-bit mono PCM WAV file bytes, for tests that need real audio.
+#[cfg(test)]
+pub(crate) fn wav_bytes(rate: u32, samples: &[i16]) -> Vec<u8> {
+    let data_len = (samples.len() * 2) as u32;
+    let mut out = Vec::with_capacity(44 + samples.len() * 2);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + data_len).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    out.extend_from_slice(&1u16.to_le_bytes()); // mono
+    out.extend_from_slice(&rate.to_le_bytes());
+    out.extend_from_slice(&(rate * 2).to_le_bytes());
+    out.extend_from_slice(&2u16.to_le_bytes());
+    out.extend_from_slice(&16u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_len.to_le_bytes());
+    for s in samples {
+        out.extend_from_slice(&s.to_le_bytes());
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,26 +240,5 @@ mod tests {
         // A missing audio track is an error that names the track.
         let err = detect(&ffmpeg, &wav, 3).await.unwrap_err().to_string();
         assert!(err.contains("audio track 3"), "{err}");
-    }
-
-    fn wav_bytes(rate: u32, samples: &[i16]) -> Vec<u8> {
-        let data_len = (samples.len() * 2) as u32;
-        let mut out = Vec::with_capacity(44 + samples.len() * 2);
-        out.extend_from_slice(b"RIFF");
-        out.extend_from_slice(&(36 + data_len).to_le_bytes());
-        out.extend_from_slice(b"WAVEfmt ");
-        out.extend_from_slice(&16u32.to_le_bytes());
-        out.extend_from_slice(&1u16.to_le_bytes()); // PCM
-        out.extend_from_slice(&1u16.to_le_bytes()); // mono
-        out.extend_from_slice(&rate.to_le_bytes());
-        out.extend_from_slice(&(rate * 2).to_le_bytes());
-        out.extend_from_slice(&2u16.to_le_bytes());
-        out.extend_from_slice(&16u16.to_le_bytes());
-        out.extend_from_slice(b"data");
-        out.extend_from_slice(&data_len.to_le_bytes());
-        for s in samples {
-            out.extend_from_slice(&s.to_le_bytes());
-        }
-        out
     }
 }

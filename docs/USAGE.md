@@ -132,39 +132,55 @@ or `--no-clean`). Folder runs mirror the input structure and are in-place safe.
 ### `sync` — retime automatically
 
 ```
-subx sync <IN> <OUT> --ref <VIDEO|AUDIO|SUBTITLE> [--audio-track 0]
+subx sync <VIDEO.mkv>                  # the subtitles inside the video
+subx sync <SUBTITLE> <VIDEO>           # an external subtitle with its video
+subx sync <FOLDER> [<VIDEO-FOLDER>]    # a whole season
+             [-o OUT | --in-place] [--audio-track 0] [--sub-track N]
              [--max-shift 120] [--min-confidence 0.2] [--dry-run]
              [-r] [--ext .srt,.ass,.ssa,.vtt]
 ```
 
 Like `shift`, but the offset is measured instead of typed: `sync` finds the one
-time shift that lines the subtitle up with the reference and applies it
-(positive delays, negative advances; `<OUT>` may equal `<IN>`). Two kinds of
-reference:
+time shift that lines the subtitle up with the audio and applies it (positive
+delays, negative advances).
 
-- **A video or audio file.** ffmpeg decodes one audio track (`--audio-track`,
-  0 = first) and an energy-based detector marks where speech is; the offset is
-  the one where the subtitle's cues cover that speech best. It is a plain
-  detector, not a trained one, so loud background music blurs it.
-- **An already-timed subtitle** (`.srt`/`.ass`/`.ssa`/`.vtt`): the cues of the
-  two files are lined up. Use it when the audio is music-heavy, or to carry the
-  timing of a good release over to another release of the same episode.
+- **A video alone** (`.mkv`): the subtitle tracks already inside it are
+  measured against the video's own audio, which is decoded once for all of
+  them. The video is rewritten with `mkvmerge --sync`, so every stream,
+  chapter and attachment is copied as it is: no re-encode, and the subtitle
+  text is untouched. Tracks that are already in sync, below the confidence
+  floor, or bitmap (PGS/VobSub) stay as they were; `--sub-track N` limits the
+  run to one track (0 = first). Needs ffmpeg and MKVToolNix.
+- **An external subtitle with its video:** the video's audio is the reference.
+  Pass an already-timed subtitle instead of a video when the audio is
+  music-heavy, or to carry the timing of a good release over to another release
+  of the same episode. The result keeps the subtitle's own format.
+- **A folder:** a folder of videos alone retimes the subtitles inside each one;
+  a folder of subtitles plus a folder of videos pairs files by episode number
+  (`Show - 01.ass` ↔ `Show - 01.mkv`; a video is preferred over a subtitle of
+  the same episode). Files without a partner are listed and left alone.
 
-In folder mode `--ref` is a folder too and files pair by episode number
-(`Show - 01.ass` ↔ `Show - 01.mkv`; a video is preferred over a subtitle of the
-same episode). Files without a reference are listed and left alone.
+The result goes to `<name>.synced.<ext>` next to the input (`Ep01.mkv` →
+`Ep01.synced.mkv`) so the original is never touched; `-o` picks another path (a
+folder for a folder run) and `--in-place` overwrites the input. Everything is
+written through a temporary file, so an interrupted run leaves no half file.
+`.synced` copies are skipped by folder runs, and an input that is already in
+sync is not rewritten.
 
-The search covers ±`--max-shift` seconds (default 120) and the result moves
-every event by the same amount: there is no split or frame-rate correction, so
-a subtitle for a different cut of the episode only lines up where the cuts
-agree. Events without text, drawings and events longer than 20 s are ignored
-while matching but are still shifted.
+Speech comes from ffmpeg decoding one audio track (`--audio-track`, 0 = first)
+and an energy-based detector. It is a plain detector, not a trained one, so loud
+background music blurs it. The search covers ±`--max-shift` seconds (default
+120) and moves every event by the same amount: there is no split or frame-rate
+correction, so a subtitle for a different cut of the episode only lines up
+where the cuts agree. Offsets of up to 40 ms count as already in sync. Events
+without text, drawings and events longer than 20 s are ignored while matching
+but are still moved.
 
 Every result carries a confidence from 0 to 1 (how far the best offset stands
 out from chance) and the share of cue time that falls on speech. Below
-`--min-confidence` the file is **not written** and a single-file run exits with
-an error (a folder run counts it under "Low confidence"); `0` always writes.
-`--dry-run` prints the offsets and writes nothing, so `<OUT>` can be left out.
+`--min-confidence` the file or track is **left alone**; a single-file run then
+exits with an error and a folder run counts it as skipped. `0` always retimes.
+`--dry-run` prints the offsets and writes nothing.
 
 ### `filter` — delete keyword lines
 
@@ -487,6 +503,6 @@ token estimates first.
 | `encode`: `StaxRip is still running` | finish/close StaxRip first, or `--allow-running` |
 | `encode`: `Output does not match: resolution=...` | the template's size won; check `--resolution` and the StaxRip log in `Settings\Log Files` |
 | `clean` skipped `subs/en/` | add `-r` to recurse into language subfolders |
-| `sync`: `confidence … is below --min-confidence` | the subtitle does not match that audio (wrong episode or cut, or music drowns the speech): try another `--audio-track`, a timed subtitle as `--ref`, or run `--dry-run --min-confidence 0` to see the guess |
+| `sync`: `confidence … is below --min-confidence` | the subtitle does not match that audio (wrong episode or cut, or music drowns the speech): try another `--audio-track`, a timed subtitle as the second argument, or run `--dry-run --min-confidence 0` to see the guess |
 | `self-update`: `cannot write to …` | the folder holding `subx` is not writable; re-run with the permissions to write there |
 | mojibake input | files are read as UTF-8; convert legacy encodings first (planned: auto-detect) |
