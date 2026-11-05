@@ -167,17 +167,23 @@ written through a temporary file, so an interrupted run leaves no half file.
 `.synced` copies are skipped by folder runs, and an input that is already in
 sync is not rewritten.
 
-Speech comes from ffmpeg decoding one audio track (`--audio-track`, 0 = first)
-and an energy-based detector. It is a plain detector, not a trained one, so loud
-background music blurs it. The search covers ±`--max-shift` seconds (default
-120) and moves every event by the same amount: there is no split or frame-rate
-correction, so a subtitle for a different cut of the episode only lines up
-where the cuts agree. Offsets of up to 40 ms count as already in sync. Events
-without text, drawings and events longer than 20 s are ignored while matching
-but are still moved.
+What gets matched is where lines *start*: ffmpeg decodes one audio track
+(`--audio-track`, 0 = first), the moments where the voice band suddenly gets
+louder are found, and the offset that puts the most cue starts on those onsets
+wins. It is a plain energy measure, not a trained detector, so a loud music or
+effects onset counts like a voice, but it keeps working on dense, music-backed
+dialogue where an on/off speech detector calls nearly everything speech. Only
+dialogue cues take part: events with an Effect (karaoke and other generated
+typesetting), drawings, events over 20 s and styles far less used than the main
+one (signs, opening and ending lyrics) are ignored while matching but still
+move with the rest. The search covers ±`--max-shift` seconds (default 120) and
+moves every event by the same amount: there is no split or frame-rate
+correction, so a subtitle for a different cut of the episode only lines up where
+the cuts agree. Cue starts are lined up with speech onsets to within about
+100 ms, and offsets of up to 150 ms count as already in sync.
 
 Every result carries a confidence from 0 to 1 (how far the best offset stands
-out from chance) and the share of cue time that falls on speech. Below
+out from chance) and the number of cue starts it was based on. Below
 `--min-confidence` the file or track is **left alone**; a single-file run then
 exits with an error and a folder run counts it as skipped. `0` always retimes.
 `--dry-run` prints the offsets and writes nothing.

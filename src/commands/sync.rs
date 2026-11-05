@@ -7,7 +7,7 @@ use clap::Args;
 use crate::common::episode::EpisodeId;
 use crate::common::tools::{self, Tool};
 use crate::media::{mkv, speech};
-use crate::subs::sync::{self, Alignment, Bits};
+use crate::subs::sync::{self, Alignment, Onsets};
 use crate::subs::{batch, shift, supported_exts};
 
 /// Video and audio containers ffmpeg can listen to.
@@ -145,10 +145,8 @@ fn offset_text(ms: i64) -> String {
 
 fn quality_text(a: &Alignment) -> String {
     format!(
-        "{:.2} (peak {:.1} sigma), {:.0}% of cue time on speech",
-        a.confidence,
-        a.peak_sigma,
-        a.coverage * 100.0
+        "{:.2} (peak {:.1} sigma, {} cue starts)",
+        a.confidence, a.peak_sigma, a.cues
     )
 }
 
@@ -164,14 +162,14 @@ fn max_shift_ms(args: &SyncArgs) -> i64 {
     (args.max_shift * 1000.0).round() as i64
 }
 
-/// The reference signal: cues of a subtitle, else speech in the audio.
-async fn reference_bits(path: &Path, audio_track: u32) -> Result<Bits> {
+/// The reference signal: cue starts of a subtitle, else speech onsets in the audio.
+async fn reference_onsets(path: &Path, audio_track: u32) -> Result<Onsets> {
     if is_subtitle(path) {
         let file = batch::load_any(path)?;
-        return Ok(Bits::from_ranges(sync::cue_ranges(&file.events)));
+        return Ok(Onsets::from_starts(&sync::cue_starts(&file.events)));
     }
     let ffmpeg = tools::require_one(Tool::Ffmpeg)?;
-    Ok(Bits::from_ranges(
+    Ok(Onsets::from_strength(
         speech::detect(&ffmpeg, path, audio_track).await?,
     ))
 }
@@ -190,12 +188,12 @@ struct Outcome {
 async fn sync_one(input: &Path, dest: &Path, reference: &Path, args: &SyncArgs) -> Result<Outcome> {
     // Fully loaded before writing, so in-place runs (dest == input) are safe.
     let mut file = batch::load_any(input)?;
-    let subs = Bits::from_ranges(sync::cue_ranges(&file.events));
-    let reference = reference_bits(reference, args.audio_track)
+    let starts = sync::cue_starts(&file.events);
+    let reference = reference_onsets(reference, args.audio_track)
         .await
         .with_context(|| format!("cannot read the reference {}", reference.display()))?;
 
-    let alignment = sync::align(&reference, &subs, max_shift_ms(args))?;
+    let alignment = sync::align(&reference, &starts, max_shift_ms(args))?;
     let trusted = alignment.confidence >= args.min_confidence;
     let write = trusted
         && !args.dry_run
@@ -534,7 +532,7 @@ async fn sync_video(
 
     // The audio is decoded once and every track is measured against it.
     let reference_path = args.reference.as_deref().unwrap_or(video);
-    let reference = reference_bits(reference_path, args.audio_track)
+    let reference = reference_onsets(reference_path, args.audio_track)
         .await
         .with_context(|| format!("cannot read the reference {}", reference_path.display()))?;
     let scratch = Scratch::new()?;
@@ -555,7 +553,7 @@ async fn sync_video(
             let subs = batch::load_any(&file)?;
             sync::align(
                 &reference,
-                &Bits::from_ranges(sync::cue_ranges(&subs.events)),
+                &sync::cue_starts(&subs.events),
                 max_shift_ms(args),
             )
         }

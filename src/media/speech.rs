@@ -1,12 +1,14 @@
-//! Speech-activity detection for automatic retiming.
+//! Speech-onset detection for automatic retiming.
 //!
 //! ffmpeg decodes one audio track to 8 kHz mono PCM, band-limited to the voice
-//! range so music and effects count less. An adaptive energy gate then marks
-//! each 10 ms frame as speech or not. This is a plain energy detector, not a
-//! trained VAD: background music at dialogue level blurs it, which is why the
-//! retimer also accepts an already-timed subtitle as the reference.
+//! range so music and effects count less. Each 10 ms frame gets a level in dB,
+//! and the onset strength of a frame is how much louder the next 80 ms are than
+//! the previous 80 ms. That marks where lines of dialogue begin, which is what
+//! subtitle starts are timed to. It stays informative on dense, music-backed
+//! dialogue where an on/off speech detector calls nearly every moment speech
+//! (83% of a real comedy episode), and it is a plain energy measure, not a
+//! trained detector: a loud music or effects onset counts like a voice.
 
-use std::ops::Range;
 use std::path::Path;
 use std::process::Stdio;
 
@@ -17,14 +19,13 @@ use tokio::io::AsyncReadExt;
 const FRAME_SAMPLES: usize = 80;
 const FRAME_BYTES: usize = FRAME_SAMPLES * 2;
 
-/// Gaps shorter than this inside speech are bridged (breaths, plosives).
-const BRIDGE_FRAMES: usize = 30;
-/// Bursts shorter than this are clicks, not speech.
-const MIN_SPEECH_FRAMES: usize = 10;
-/// Speech must sit within this many dB of the loud end of the track.
-const DYNAMIC_RANGE_DB: f32 = 25.0;
-/// A track flatter than this has no speech/pause contrast to find.
-const MIN_CONTRAST_DB: f32 = 6.0;
+/// Half-width in frames (80 ms) of the windows compared on either side of a frame.
+const EDGE_FRAMES: usize = 8;
+/// Half-width in frames of the smoothing of the level (20 ms) and of the onset curve (50 ms).
+const LEVEL_SMOOTH_FRAMES: usize = 2;
+const ONSET_SMOOTH_FRAMES: usize = 5;
+/// Level jumps are clipped here so one explosion cannot outweigh a hundred lines.
+const MAX_JUMP_DB: f32 = 20.0;
 
 /// Level of one 10 ms frame of little-endian `i16` PCM, in dB below full scale.
 fn frame_db(frame: &[u8]) -> f32 {
@@ -41,42 +42,41 @@ fn frame_db(frame: &[u8]) -> f32 {
     (20.0 * rms.max(1e-5).log10()) as f32
 }
 
-/// Speech runs (in 10 ms frames) from per-frame levels.
-///
-/// The gate sits between the quiet floor (10th percentile) and the loud end
-/// (90th), never more than [`DYNAMIC_RANGE_DB`] below the loud end; short gaps
-/// are closed first, then short bursts dropped.
-pub fn speech_ranges(db: &[f32]) -> Vec<Range<usize>> {
+/// Moving average over `±half` frames (shorter at the ends).
+fn box_smooth(values: &[f32], half: usize) -> Vec<f32> {
+    let mut prefix = vec![0f64; values.len() + 1];
+    for (i, &v) in values.iter().enumerate() {
+        prefix[i + 1] = prefix[i] + f64::from(v);
+    }
+    (0..values.len())
+        .map(|i| {
+            let (a, b) = (i.saturating_sub(half), (i + half + 1).min(values.len()));
+            ((prefix[b] - prefix[a]) / (b - a) as f64) as f32
+        })
+        .collect()
+}
+
+/// Onset strength per 10 ms frame from per-frame levels: the rise (dB, clipped
+/// to [`MAX_JUMP_DB`]) of the level over the 80 ms ahead versus the 80 ms
+/// behind, smoothed over 50 ms. Falling levels count as zero.
+pub fn onset_strength(db: &[f32]) -> Vec<f32> {
     if db.is_empty() {
         return Vec::new();
     }
-    let mut sorted = db.to_vec();
-    sorted.sort_by(f32::total_cmp);
-    let at = |q: f32| sorted[((sorted.len() - 1) as f32 * q) as usize];
-    let (floor, loud) = (at(0.10), at(0.90));
-    if loud - floor < MIN_CONTRAST_DB {
-        return Vec::new();
-    }
-    let gate = (floor + 0.45 * (loud - floor)).max(loud - DYNAMIC_RANGE_DB);
-
-    // Runs of frames above the gate.
-    let mut runs: Vec<Range<usize>> = Vec::new();
-    for (i, &level) in db.iter().enumerate() {
-        if level <= gate {
-            continue;
-        }
-        match runs.last_mut() {
-            Some(last) if i - last.end < BRIDGE_FRAMES => last.end = i + 1,
-            _ => runs.push(i..i + 1),
-        }
-    }
-    runs.retain(|r| r.len() >= MIN_SPEECH_FRAMES);
-    runs
+    let level = box_smooth(db, LEVEL_SMOOTH_FRAMES);
+    let last = level.len() - 1;
+    let rise: Vec<f32> = (0..level.len())
+        .map(|i| {
+            let jump = level[(i + EDGE_FRAMES).min(last)] - level[i.saturating_sub(EDGE_FRAMES)];
+            jump.clamp(0.0, MAX_JUMP_DB)
+        })
+        .collect();
+    box_smooth(&rise, ONSET_SMOOTH_FRAMES)
 }
 
-/// Decode audio stream `audio_track` (0 = first) of `media` and return where
-/// speech is, in 10 ms frames.
-pub async fn detect(ffmpeg: &Path, media: &Path, audio_track: u32) -> Result<Vec<Range<usize>>> {
+/// Decode audio stream `audio_track` (0 = first) of `media` and return its
+/// onset strength per 10 ms frame.
+pub async fn detect(ffmpeg: &Path, media: &Path, audio_track: u32) -> Result<Vec<f32>> {
     let mut child = tokio::process::Command::new(ffmpeg)
         .args(["-v", "error", "-nostdin", "-i"])
         .arg(media)
@@ -134,7 +134,7 @@ pub async fn detect(ffmpeg: &Path, media: &Path, audio_track: u32) -> Result<Vec
     if db.is_empty() {
         bail!("no audio decoded from {}", media.display());
     }
-    Ok(speech_ranges(&db))
+    Ok(onset_strength(&db))
 }
 
 /// 16-bit mono PCM WAV file bytes, for tests that need real audio.
@@ -164,15 +164,6 @@ pub(crate) fn wav_bytes(rate: u32, samples: &[i16]) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    /// 10 ms frame levels: `speech` ranges at -20 dB over a -60 dB floor.
-    fn levels(len: usize, speech: &[Range<usize>]) -> Vec<f32> {
-        let mut db = vec![-60.0; len];
-        for r in speech {
-            db[r.clone()].fill(-20.0);
-        }
-        db
-    }
-
     #[test]
     fn frame_level_matches_amplitude() {
         let loud: Vec<u8> = (0..FRAME_SAMPLES)
@@ -184,35 +175,36 @@ mod tests {
     }
 
     #[test]
-    fn finds_bursts_and_bridges_short_gaps() {
-        // 1.0-3.0 s, a 0.2 s breath, 3.2-4.0 s, then a 40 ms click, then 8.0-9.0 s.
-        let db = levels(1200, &[100..300, 320..400, 600..604, 800..900]);
-        assert_eq!(speech_ranges(&db), vec![100..400, 800..900]);
+    fn onsets_peak_where_the_level_jumps_up() {
+        // Quiet, a line from frame 300 to 500, quiet again, another from 700.
+        let mut db = vec![-60.0f32; 1000];
+        db[300..500].fill(-20.0);
+        db[700..].fill(-25.0);
+        let strength = onset_strength(&db);
+        let peak = |from: usize, to: usize| {
+            (from..to)
+                .max_by(|&a, &b| strength[a].total_cmp(&strength[b]))
+                .unwrap()
+        };
+        assert!(peak(250, 350).abs_diff(300) <= 2, "{}", peak(250, 350));
+        assert!(peak(650, 750).abs_diff(700) <= 2, "{}", peak(650, 750));
+        // The 40 dB jump is clipped, and neither a steady level nor the drop at 500 counts.
+        assert!(strength[300] <= MAX_JUMP_DB + 1e-3);
+        assert!(strength[100] < 1e-3 && strength[400] < 1e-3);
+        assert!(strength[500] < 1e-3);
     }
 
     #[test]
-    fn flat_or_empty_audio_has_no_speech() {
-        assert!(speech_ranges(&[]).is_empty());
-        assert!(speech_ranges(&vec![-30.0; 5000]).is_empty());
-        let hum: Vec<f32> = (0..5000).map(|i| -30.0 + (i % 3) as f32).collect();
-        assert!(speech_ranges(&hum).is_empty());
-    }
-
-    #[test]
-    fn quiet_music_below_the_dialogue_range_is_ignored() {
-        // Dialogue at -20 dB; music bed at -50 dB (30 dB down) must not count.
-        let mut db = levels(2000, &[200..400, 900..1100, 1500..1700]);
-        for v in db.iter_mut().filter(|v| **v < -55.0) {
-            *v = -50.0;
-        }
-        assert_eq!(speech_ranges(&db), vec![200..400, 900..1100, 1500..1700]);
+    fn flat_or_empty_audio_has_no_onsets() {
+        assert!(onset_strength(&[]).is_empty());
+        assert!(onset_strength(&vec![-30.0; 500]).iter().all(|&s| s < 1e-3));
     }
 
     /// Real ffmpeg decode of a generated WAV: tones where "speech" is, near
     /// silence elsewhere. Needs ffmpeg — run explicitly: `cargo test -- --ignored`.
     #[tokio::test]
     #[ignore = "needs ffmpeg"]
-    async fn e2e_detects_tone_bursts_from_a_wav() {
+    async fn e2e_finds_the_start_of_each_tone_burst_in_a_wav() {
         let rate = 16_000usize;
         let bursts = [(1.0f64, 2.5f64), (4.0, 5.0), (7.0, 9.0)];
         let samples: Vec<i16> = (0..rate * 10)
@@ -230,13 +222,19 @@ mod tests {
         std::fs::write(&wav, wav_bytes(rate as u32, &samples)).unwrap();
 
         let (ffmpeg, _) = crate::common::tools::ffmpeg_pair().expect("ffmpeg missing");
-        let found = detect(&ffmpeg, &wav, 0).await.unwrap();
-        assert_eq!(found.len(), bursts.len(), "{found:?}");
-        for (r, &(a, b)) in found.iter().zip(&bursts) {
-            // Within 60 ms of the true edges (filter and resampler ringing).
-            assert!((r.start as f64 - a * 100.0).abs() <= 6.0, "{r:?} vs {a}");
-            assert!((r.end as f64 - b * 100.0).abs() <= 6.0, "{r:?} vs {b}");
+        let strength = detect(&ffmpeg, &wav, 0).await.unwrap();
+        assert!(strength.len().abs_diff(1000) <= 2, "{}", strength.len());
+        for &(start, _) in &bursts {
+            let at = (start * 100.0) as usize;
+            let top = (at - 10..at + 10)
+                .max_by(|&a, &b| strength[a].total_cmp(&strength[b]))
+                .unwrap();
+            // The strongest frame is within 60 ms of the true start, and strong.
+            assert!(top.abs_diff(at) <= 6, "burst at {start}s: peak at {top}");
+            assert!(strength[top] > 10.0, "burst at {start}s: {}", strength[top]);
         }
+        // Silence between the bursts stays quiet.
+        assert!(strength[300..380].iter().all(|&s| s < 1.0));
         // A missing audio track is an error that names the track.
         let err = detect(&ffmpeg, &wav, 3).await.unwrap_err().to_string();
         assert!(err.contains("audio track 3"), "{err}");
