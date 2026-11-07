@@ -33,6 +33,11 @@ Prebuilt archives (`subx-<version>-<target>.zip` / `.tar.xz` with `SHA256SUMS`)
 are on the Releases page for Windows x64/arm64, Linux x64/arm64 (static) and
 macOS arm64; unpack and put `subx` on `PATH`, then keep it current with
 `subx self-update` (see [`self-update`](#self-update--update-subx-itself)).
+On Arch Linux, `paru -S subx-bin` installs the same static binary from the AUR
+as `/usr/bin/subx` (with `ffmpeg`; `mkvtoolnix-cli` and `yt-dlp` are optional
+dependencies); update it through the AUR helper, not `self-update`, and keep
+`subx.toml` in the working directory or pass `--config` (examples in
+`/usr/share/doc/subx-bin/`).
 Or from the repo root: `make build-release`, `make check`, `make install`.
 `ffmpeg` via `winget install ffmpeg` / `scoop install ffmpeg`;
 `yt-dlp` (for `fetch`) via `winget install yt-dlp`; MKVToolNix is on `PATH` or,

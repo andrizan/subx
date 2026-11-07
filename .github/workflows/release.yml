@@ -90,3 +90,87 @@ jobs:
           body_path: RELEASE_NOTES.md
           files: dist/*
           fail_on_unmatched_files: true
+
+  aur:
+    name: Publish to AUR (subx-bin)
+    needs: release
+    # makepkg rejects a "-" in pkgver, so pre-release tags (v1.4.0-rc.1) stay off the AUR.
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      BUILD_DIR: /home/builder/subx-bin
+    steps:
+      - name: Tools
+        run: pacman -Syu --noconfirm --needed git openssh
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Render PKGBUILD from the published release
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          curl -fsSL -o SHA256SUMS \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/SHA256SUMS"
+          sum() { awk -v f="subx-${version}-$1-unknown-linux-musl.tar.xz" '$2 == f { print $1 }' SHA256SUMS; }
+          x86_64="$(sum x86_64)"
+          aarch64="$(sum aarch64)"
+          if [ -z "$x86_64" ] || [ -z "$aarch64" ]; then
+            echo "::error::Linux musl archives for $version are missing from SHA256SUMS"
+            exit 1
+          fi
+          useradd -m builder
+          install -d -o builder "$BUILD_DIR"
+          sed -e "s/^pkgver=.*/pkgver=${version}/" \
+              -e "s/^pkgrel=.*/pkgrel=1/" \
+              -e "s/^sha256sums_x86_64=.*/sha256sums_x86_64=('${x86_64}')/" \
+              -e "s/^sha256sums_aarch64=.*/sha256sums_aarch64=('${aarch64}')/" \
+              pkg/aur/PKGBUILD > "$BUILD_DIR/PKGBUILD"
+          chown builder "$BUILD_DIR/PKGBUILD"
+
+      # makepkg refuses root; --nodeps because only the package layout is under test.
+      - name: Build package + .SRCINFO
+        working-directory: ${{ env.BUILD_DIR }}
+        run: |
+          set -euo pipefail
+          runuser -u builder -- makepkg --nodeps --noconfirm --force
+          ./pkg/subx-bin/usr/bin/subx --version
+          runuser -u builder -- makepkg --printsrcinfo > .SRCINFO
+          cat .SRCINFO
+
+      - name: Push to the AUR
+        working-directory: ${{ env.BUILD_DIR }}
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          if [ -z "$AUR_SSH_PRIVATE_KEY" ]; then
+            echo "::error::secret AUR_SSH_PRIVATE_KEY is not set"
+            exit 1
+          fi
+          # ssh reads ~ from passwd, not $HOME, so every path is passed explicitly.
+          ssh_dir="$RUNNER_TEMP/aur-ssh"
+          install -d -m 700 "$ssh_dir"
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$ssh_dir/key"
+          chmod 600 "$ssh_dir/key"
+          # Host key as published on https://aur.archlinux.org (SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4).
+          echo 'aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN' \
+            > "$ssh_dir/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $ssh_dir/key -o IdentitiesOnly=yes -o UserKnownHostsFile=$ssh_dir/known_hosts -o StrictHostKeyChecking=yes"
+          git clone ssh://aur@aur.archlinux.org/subx-bin.git aur
+          cp PKGBUILD .SRCINFO aur/
+          cd aur
+          git add PKGBUILD .SRCINFO
+          if git diff --cached --quiet; then
+            echo "subx-bin is already at $version on the AUR"
+            exit 0
+          fi
+          git -c user.name=andrizan -c user.email=me@andrizan.com commit -m "Update to $version"
+          git push origin HEAD:master

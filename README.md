@@ -27,6 +27,9 @@ cargo install --path .      # installs `subx` via cargo
 cargo build --release       # or binary at target/release/subx.exe
 ```
 
+Arch Linux: `paru -S subx-bin` (AUR, the prebuilt static binary; pulls in
+`ffmpeg`).
+
 Shortcuts: `make build-release`, `make check`, `make run ARGS="..."`.
 
 ## Commands
@@ -85,7 +88,7 @@ Conventions: [`AGENTS.md`](AGENTS.md); architecture and roadmap:
 [`docs/DESIGN.md`](docs/DESIGN.md). Every PR builds release binaries for all
 supported targets (7-day artifacts); a `v*` tag publishes archives for
 Windows x64/arm64, Linux x64/arm64 (static musl) and macOS arm64, plus
-`SHA256SUMS` and a changelog.
+`SHA256SUMS` and a changelog, then updates the `subx-bin` AUR package.
 
 ## License
 

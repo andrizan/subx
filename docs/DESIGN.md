@@ -371,6 +371,7 @@ code changes. `make trivy` runs the same scan locally.
 3. Package per target: `subx-<version>-<target>.zip` on Windows, `.tar.xz` elsewhere, containing the binary, `README.md`, `LICENSE`, `subx.toml`, `subx.local.toml.example`.
 4. `SHA256SUMS` over every archive; changelog from `cliff.toml` via `orhun/git-cliff-action` (replaces the current `docker run`).
 5. `softprops/action-gh-release` with `fail_on_unmatched_files: true`.
+6. `aur` (stable tags only — a `-` in the tag is invalid in `pkgver`): in an `archlinux:base-devel` container, render `pkg/aur/PKGBUILD` (`subx-bin`, repackaging the two Linux musl archives) with the tag's version and the published `SHA256SUMS`, build it with `makepkg` and smoke-test the binary, generate `.SRCINFO`, then push both to `ssh://aur@aur.archlinux.org/subx-bin.git`. Needs the repo secret `AUR_SSH_PRIVATE_KEY` (a key registered on the maintainer's AUR account); the AUR host key is pinned in the workflow. A failure here leaves the GitHub Release intact and can be re-run on its own.
 
 Actions are pinned to full commit SHAs with the version in a comment, refreshed
 by Dependabot (`github-actions` and `cargo` ecosystems, weekly). Versions
