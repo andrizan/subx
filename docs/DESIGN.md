@@ -364,6 +364,12 @@ scan — Cargo.lock vulnerabilities, secrets, misconfigurations — failing on
 fixable HIGH/CRITICAL findings; the weekly run catches CVEs published between
 code changes. `make trivy` runs the same scan locally.
 
+`pages.yml` (pushes to `main` that touch `docs/`, or manual): builds `docs/`
+with `actions/jekyll-build-pages` and deploys it to GitHub Pages
+(`https://andrizan.github.io/subx/`). The repository's Pages source must be
+**GitHub Actions**; the branch-based builder only ever ran once, so the manual
+silently stopped updating after the first publish.
+
 `release.yml` (tags `v*`; `permissions: contents: write`):
 
 1. Guard: the tag must equal `Cargo.toml` `version`, otherwise fail before building.
