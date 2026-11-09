@@ -143,11 +143,16 @@ subx clean <IN> [OUT] [--keep-karaoke] [--drop-junk] [--font Arial]
   events; only the first (same time, layer, text and position) is kept. The
   report counts them as `duplicates dropped`: a typeset script of 85,000 events
   lost 71,000 this way.
-- `--dialogue-only` keeps just the spoken lines and drops karaoke, songs, signs,
-  effect fragments and other typesetting, with the same selection `sync` times
-  against (see below). One 12.7 MB script of 84,747 events became 31 KB and 349
-  lines. Use it when the songs and signs are not wanted; with `--in-place` it
-  cannot be undone.
+- `--dialogue-only` keeps just the spoken lines, exactly as written. Each line
+  keeps its own style and tags (italic thoughts, narration, top-positioned
+  text), and the styles in use are carried over into the new header with their
+  font replaced by `--font`; the original play resolution stays. Dropped:
+  karaoke, letter-sized effect fragments, typesetting stacked several layers
+  deep, junk lines and duplicates. It is more lenient than the selection `sync`
+  times against (see below): a small style (narration, flashback, signs) or a
+  song translation is kept rather than risk a lost line. One 12.7 MB script of
+  84,747 events became 41 KB and 359 lines. With `--in-place` it cannot be
+  undone.
 - `<IN>` is one file or a folder, and `[OUT]` is optional: without it each
   result is a `<name>.clean.ass` copy next to its input, so the original is
   never touched (`subx clean .`). `[OUT]` names a file or a folder (mirroring

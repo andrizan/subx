@@ -118,6 +118,19 @@ impl Onsets {
 ///
 /// SRT and WebVTT have one style, so every cue counts.
 pub fn dialogue_mask(events: &[Event]) -> Vec<bool> {
+    select(events, true)
+}
+
+/// Like [`dialogue_mask`] but keeps every style that is not stacked typesetting,
+/// small ones included (narration, flashbacks, signs, song translations). For
+/// callers that must not lose a spoken line; the price is a few more non-dialogue
+/// lines than the strict selection that timing needs.
+pub fn spoken_mask(events: &[Event]) -> Vec<bool> {
+    select(events, false)
+}
+
+/// `drop_minor` also drops styles with far less cue time than the main one.
+fn select(events: &[Event], drop_minor: bool) -> Vec<bool> {
     let spoken: Vec<bool> = events
         .iter()
         .map(|e| {
@@ -142,7 +155,8 @@ pub fn dialogue_mask(events: &[Event]) -> Vec<bool> {
             let total = v.iter().map(|(s, e)| e - s).sum();
             let (mut covered, mut reach) = (0, i64::MIN);
             for (s, e) in v {
-                covered += e - s.max(reach);
+                // An event inside an earlier, longer one adds nothing.
+                covered += (e - s.max(reach)).max(0);
                 reach = reach.max(e);
             }
             (style, (total, covered))
@@ -154,6 +168,16 @@ pub fn dialogue_mask(events: &[Event]) -> Vec<bool> {
     };
     // Dense styles are typesetting, unless that would leave nothing.
     let drop_dense = totals.keys().any(|s| !stacked(s));
+    for (style, (total, covered)) in &totals {
+        tracing::debug!(
+            style,
+            total_s = *total / 1000,
+            covered_s = *covered / 1000,
+            stacked = stacked(style),
+            drop_minor,
+            "dialogue style"
+        );
+    }
     let candidate = |style: &str| !(drop_dense && stacked(style));
     let busiest = totals
         .iter()
@@ -164,7 +188,9 @@ pub fn dialogue_mask(events: &[Event]) -> Vec<bool> {
     events
         .iter()
         .zip(spoken)
-        .map(|(e, s)| s && candidate(&e.style) && totals[e.style.as_str()].0 * 5 >= busiest)
+        .map(|(e, s)| {
+            s && candidate(&e.style) && (!drop_minor || totals[e.style.as_str()].0 * 5 >= busiest)
+        })
         .collect()
 }
 
@@ -472,6 +498,65 @@ mod tests {
         let starts = cue_starts(&events);
         assert_eq!(starts.len(), 100);
         assert!(starts.iter().all(|s| s % 500 == 0), "only the real lines");
+    }
+
+    #[test]
+    fn a_cue_inside_a_longer_one_does_not_count_as_stacking() {
+        // 20 lines, each with a short cue (a sound effect caption) inside it: the
+        // time covered is the long cues only, so the style is not "stacked".
+        let mut events = Vec::new();
+        for i in 0..20 {
+            events.push(ev(i * 12_000, i * 12_000 + 10_000, "Default", "", "Line"));
+            events.push(ev(
+                i * 12_000 + 2_000,
+                i * 12_000 + 3_000,
+                "Default",
+                "",
+                "Bang",
+            ));
+        }
+        events.extend((0..3).map(|i| ev(900_000 + i * 4000, 902_000 + i * 4000, "Other", "", "x")));
+        // Both styles are kept; counting the nested cue as negative time would
+        // have flagged "Default" as stacked and dropped it.
+        assert_eq!(cue_starts(&events).len(), 40);
+    }
+
+    #[test]
+    fn the_lenient_selection_keeps_small_dialogue_styles() {
+        // 100 lines of dialogue (200 s) and 5 lines of narration (10 s, 5% of it).
+        let mut events: Vec<Event> = (0..100)
+            .map(|i| ev(i * 5000, i * 5000 + 2000, "Default", "", "Line"))
+            .collect();
+        events.extend((0..5).map(|i| {
+            ev(
+                600_000 + i * 4000,
+                602_000 + i * 4000,
+                "Narration",
+                "",
+                "Long ago",
+            )
+        }));
+        let count = |mask: Vec<bool>| mask.into_iter().filter(|k| *k).count();
+        // Timing wants only the main style; cleaning must not lose the narration.
+        assert_eq!(count(dialogue_mask(&events)), 100);
+        assert_eq!(count(spoken_mask(&events)), 105);
+    }
+
+    #[test]
+    fn the_lenient_selection_still_drops_stacked_effects_and_fragments() {
+        let mut events: Vec<Event> = (0..20)
+            .map(|i| ev(i * 4000, i * 4000 + 2000, "Default", "", "Line"))
+            .collect();
+        for layer in 0..8 {
+            events.push(ev(300_000, 303_000, "Fx", "", &format!("romaji {layer}")));
+        }
+        events.push(ev(5_000, 5_150, "Default", "", "wa"));
+        let mask = spoken_mask(&events);
+        assert_eq!(mask.iter().filter(|k| **k).count(), 20);
+        assert!(
+            !mask[20] && !mask[28],
+            "stacked layers and the fragment are out"
+        );
     }
 
     #[test]

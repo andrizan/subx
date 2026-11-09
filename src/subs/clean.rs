@@ -88,6 +88,106 @@ pub struct CleanStats {
     pub duplicates: usize,
 }
 
+/// What makes two events render the same: time, layer, style, text, position.
+type DedupeKey = (i64, i64, i32, String, String, [String; 3]);
+
+fn dedupe_key(e: &Event) -> DedupeKey {
+    (
+        e.start_ms,
+        e.end_ms,
+        e.layer,
+        e.style.clone(),
+        e.text.clone(),
+        e.margins.clone(),
+    )
+}
+
+/// Keep `events` as they are, with their own styles, tags and positions, and
+/// drop only junk lines (credits, bare domains, symbol-only lines) and exact
+/// duplicates. Pair with [`dialogue_header`] so the styles still exist.
+pub fn keep_events(events: &[Event], shift_ms: i32) -> (Vec<Event>, CleanStats) {
+    let mut out = Vec::new();
+    let mut stats = CleanStats::default();
+    let mut seen: HashSet<DedupeKey> = HashSet::new();
+    for e in events {
+        if clean_normal_text(&e.text).is_none() {
+            continue;
+        }
+        let mut kept = e.clone();
+        if shift_ms != 0 {
+            shift_events(std::slice::from_mut(&mut kept), shift_ms);
+        }
+        kept.effect.clear();
+        if !seen.insert(dedupe_key(&kept)) {
+            stats.duplicates += 1;
+            continue;
+        }
+        out.push(kept);
+        stats.dialogs += 1;
+    }
+    (out, stats)
+}
+
+/// The original header cut down to what `events` need: `[Script Info]` (the
+/// play resolution the styles are sized for), the styles that are used, with
+/// their font replaced by `font` (no embedded fonts to carry along), and the
+/// `[Events]` format. Comments, embedded fonts and other sections are left out.
+/// `None` when there is no styles section to carry over.
+pub fn dialogue_header(original: &[String], events: &[Event], font: &str) -> Option<Vec<String>> {
+    let used: HashSet<String> = events
+        .iter()
+        .map(|e| e.style.to_ascii_lowercase())
+        .chain(std::iter::once("default".to_string()))
+        .collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut section = String::new();
+    let mut styles = 0;
+    for line in original {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            section = trimmed.to_ascii_lowercase();
+            if matches!(
+                section.as_str(),
+                "[script info]" | "[v4+ styles]" | "[v4 styles]" | "[events]"
+            ) {
+                if !out.is_empty() {
+                    out.push(String::new());
+                }
+                out.push(trimmed.to_string());
+            }
+            continue;
+        }
+        match section.as_str() {
+            "[script info]" if !trimmed.is_empty() => out.push(line.clone()),
+            "[v4+ styles]" | "[v4 styles]" => {
+                let Some((key, rest)) = trimmed.split_once(':') else {
+                    continue;
+                };
+                if key.eq_ignore_ascii_case("format") {
+                    out.push(line.clone());
+                } else if key.eq_ignore_ascii_case("style") {
+                    let mut fields: Vec<&str> = rest.split(',').collect();
+                    let name = fields.first().map_or("", |n| n.trim());
+                    if fields.len() > 2 && used.contains(&name.to_ascii_lowercase()) {
+                        fields[1] = font;
+                        out.push(format!("Style: {}", fields.join(",").trim_start()));
+                        styles += 1;
+                    }
+                }
+            }
+            "[events]"
+                if trimmed
+                    .split_once(':')
+                    .is_some_and(|(k, _)| k.eq_ignore_ascii_case("format")) =>
+            {
+                out.push(line.clone());
+            }
+            _ => {}
+        }
+    }
+    (styles > 0).then_some(out)
+}
+
 /// Clean ASS events: keep vertical karaoke verbatim (style `Karaoke`),
 /// scrub normal dialogues (style `Default`), optionally shift timings, and drop
 /// exact duplicates. Per-letter and per-frame effects differ only in their
@@ -115,15 +215,7 @@ pub fn clean_events(events: &[Event], _font: &str, shift_ms: i32) -> (Vec<Event>
             }
         }
         kept.effect.clear();
-        let key = (
-            kept.start_ms,
-            kept.end_ms,
-            kept.layer,
-            kept.style.clone(),
-            kept.text.clone(),
-            kept.margins.clone(),
-        );
-        if !seen.insert(key) {
+        if !seen.insert(dedupe_key(&kept)) {
             stats.duplicates += 1;
             continue;
         }
