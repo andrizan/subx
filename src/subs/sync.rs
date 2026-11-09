@@ -22,6 +22,13 @@ pub const BIN_MS: i64 = 10;
 /// Events longer than this are watermarks or whole-episode signs, not speech.
 const MAX_CUE_MS: i64 = 20_000;
 
+/// Styles whose events stack deeper than this are typesetting, not dialogue.
+const MAX_STACK_DEPTH: f64 = 1.5;
+
+/// Events shorter than this are effect fragments (a letter or syllable of a
+/// karaoke effect lasts about 150 ms), not a line anyone could read.
+const MIN_CUE_MS: i64 = 250;
+
 /// Half-width in bins (100 ms) of the tolerance around each cue start of a
 /// reference subtitle; people time the same line a few frames apart.
 const START_TOLERANCE_BINS: usize = 10;
@@ -94,30 +101,80 @@ impl Onsets {
     }
 }
 
-/// Bins where the spoken cues of a subtitle start.
+/// Which events are spoken dialogue, in event order.
 ///
-/// Left out: empty events, ASS drawings, events over 20 s, karaoke syllables
-/// (an Effect plus at most three characters of text: a song can be hundreds of
-/// per-syllable lines; real dialogue that merely carries an Effect stays) and
-/// styles with far less cue time than the main one
-/// (signs, opening and ending lyrics, notes). Time, not count: signs tracked
-/// frame by frame are hundreds of 40 ms events and can outnumber the dialogue
-/// without adding up to much. SRT and WebVTT have one style, so every cue counts.
-pub fn cue_starts(events: &[Event]) -> Vec<usize> {
-    let spoken: Vec<&Event> = events
+/// Left out: empty events, ASS drawings, events under 250 ms or over 20 s,
+/// karaoke syllables (an Effect plus at most three characters of text: a song
+/// can be hundreds of per-syllable lines; real dialogue that merely carries an
+/// Effect stays), and whole styles that are not dialogue:
+///
+/// - styles stacked more than 1.5 deep (total duration over the time actually
+///   covered): opening and ending effects pile up romaji, kanji and translation
+///   lines, 9 to 18 deep in the scripts measured, where dialogue is 1.0 to 1.1.
+///   Unless every style is that dense, as in an SRT of overlapping cues.
+/// - styles with far less cue time than the main one (signs, opening and ending
+///   lyrics, notes). Time, not count: signs tracked frame by frame can outnumber
+///   the dialogue without adding up to much.
+///
+/// SRT and WebVTT have one style, so every cue counts.
+pub fn dialogue_mask(events: &[Event]) -> Vec<bool> {
+    let spoken: Vec<bool> = events
         .iter()
-        .filter(|e| e.end_ms > e.start_ms && e.end_ms - e.start_ms <= MAX_CUE_MS)
-        .filter(|e| !is_drawing(&e.text) && is_spoken(e))
+        .map(|e| {
+            (MIN_CUE_MS..=MAX_CUE_MS).contains(&(e.end_ms - e.start_ms))
+                && !is_drawing(&e.text)
+                && is_spoken(e)
+        })
         .collect();
-    let mut per_style: HashMap<&str, i64> = HashMap::new();
-    for e in &spoken {
-        *per_style.entry(e.style.as_str()).or_default() += e.end_ms - e.start_ms;
+
+    let mut spans: HashMap<&str, Vec<(i64, i64)>> = HashMap::new();
+    for (e, _) in events.iter().zip(&spoken).filter(|(_, s)| **s) {
+        spans
+            .entry(e.style.as_str())
+            .or_default()
+            .push((e.start_ms, e.end_ms));
     }
-    let busiest = per_style.values().copied().max().unwrap_or(0);
-    spoken
+    // (total duration, time covered by at least one event) per style.
+    let totals: HashMap<&str, (i64, i64)> = spans
         .into_iter()
-        .filter(|e| per_style[e.style.as_str()] * 5 >= busiest)
-        .map(|e| (e.start_ms.max(0) / BIN_MS) as usize)
+        .map(|(style, mut v)| {
+            v.sort_unstable();
+            let total = v.iter().map(|(s, e)| e - s).sum();
+            let (mut covered, mut reach) = (0, i64::MIN);
+            for (s, e) in v {
+                covered += e - s.max(reach);
+                reach = reach.max(e);
+            }
+            (style, (total, covered))
+        })
+        .collect();
+    let stacked = |style: &str| {
+        let (total, covered) = totals[style];
+        total as f64 > MAX_STACK_DEPTH * covered as f64
+    };
+    // Dense styles are typesetting, unless that would leave nothing.
+    let drop_dense = totals.keys().any(|s| !stacked(s));
+    let candidate = |style: &str| !(drop_dense && stacked(style));
+    let busiest = totals
+        .iter()
+        .filter(|(style, _)| candidate(style))
+        .map(|(_, (total, _))| *total)
+        .max()
+        .unwrap_or(0);
+    events
+        .iter()
+        .zip(spoken)
+        .map(|(e, s)| s && candidate(&e.style) && totals[e.style.as_str()].0 * 5 >= busiest)
+        .collect()
+}
+
+/// Bins where the spoken cues of a subtitle start (see [`dialogue_mask`]).
+pub fn cue_starts(events: &[Event]) -> Vec<usize> {
+    events
+        .iter()
+        .zip(dialogue_mask(events))
+        .filter(|(_, keep)| *keep)
+        .map(|(e, _)| (e.start_ms.max(0) / BIN_MS) as usize)
         .collect()
 }
 
@@ -389,11 +446,55 @@ mod tests {
             ev(8000, 9000, "", "", "{\\pos(10,10)}Positioned"),
             ev(0, 600_000, "", "", "Subbed by someone"),
             ev(10_005, 10_012, "", "", "Short"),
+            ev(10_500, 10_650, "", "", "wa"),
             ev(11_000, 12_000, "", "fx", "k"),
             ev(13_000, 14_000, "", "fx", "A real line"),
         ];
-        // The karaoke syllable goes; dialogue that merely carries an Effect stays.
-        assert_eq!(cue_starts(&events), vec![100, 800, 1000, 1300]);
+        // The karaoke syllable and the 7 ms and 150 ms fragments go; dialogue
+        // that merely carries an Effect stays.
+        assert_eq!(cue_starts(&events), vec![100, 800, 1300]);
+    }
+
+    #[test]
+    fn stacked_effect_layers_do_not_pass_for_dialogue() {
+        // 100 lines of dialogue (200 s), one after another, against opening
+        // lyrics drawn eight lines deep at the same 10 moments (240 s in total,
+        // so the busiest style by time) in a style of their own.
+        let mut events: Vec<Event> = (0..100)
+            .map(|i| ev(i * 5000, i * 5000 + 2000, "Default", "", "Line"))
+            .collect();
+        for moment in 0..10 {
+            for layer in 0..8 {
+                let at = 600_000 + moment * 3000;
+                events.push(ev(at, at + 3000, "OP", "", &format!("lyric {layer}")));
+            }
+        }
+        let starts = cue_starts(&events);
+        assert_eq!(starts.len(), 100);
+        assert!(starts.iter().all(|s| s % 500 == 0), "only the real lines");
+    }
+
+    #[test]
+    fn overlapping_cues_of_a_single_style_are_all_kept() {
+        // A script whose only style is dense (e.g. an SRT of overlapping
+        // subtitles) must not lose everything.
+        let events: Vec<Event> = (0..40)
+            .map(|i| ev((i / 4) * 3000, (i / 4) * 3000 + 3000, "", "", "x"))
+            .collect();
+        assert_eq!(cue_starts(&events).len(), 40);
+    }
+
+    #[test]
+    fn effect_fragments_in_the_dialogue_style_are_not_dialogue() {
+        // 100 lines of dialogue against 3,000 letter-sized 150 ms fragments of
+        // a karaoke effect in the very same style and without an Effect.
+        let mut events: Vec<Event> = (0..100)
+            .map(|i| ev(i * 5000, i * 5000 + 2000, "Default", "", "Line"))
+            .collect();
+        events.extend((0..3000).map(|i| ev(i * 160 + 50, i * 160 + 200, "Default", "", "wa")));
+        let starts = cue_starts(&events);
+        assert_eq!(starts.len(), 100);
+        assert!(starts.iter().all(|s| s % 500 == 0), "only the real lines");
     }
 
     #[test]
