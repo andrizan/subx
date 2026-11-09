@@ -131,13 +131,23 @@ works as a pre-mux check.
 
 ```
 subx clean <IN> [OUT] [--keep-karaoke] [--drop-junk] [--font Arial]
-             [--shift-ms 0] [--in-place] [-r]
+             [--shift-ms 0] [--in-place] [--dialogue-only] [-r]
 ```
 
 - Keeps vertical karaoke verbatim (style `Karaoke`), strips visual tags,
   drawings, junk credits and empty lines from normal dialogue (style `Default`),
   and rebuilds the header in one font. `-r` recurses (needed after `extract`).
 - `--shift-ms` retimes in the same pass.
+- Identical lines are collapsed. Per-letter and per-frame effects differ only in
+  their override tags, so stripping the tags leaves hundreds of identical
+  events; only the first (same time, layer, text and position) is kept. The
+  report counts them as `duplicates dropped`: a typeset script of 85,000 events
+  lost 71,000 this way.
+- `--dialogue-only` keeps just the spoken lines and drops karaoke, songs, signs,
+  effect fragments and other typesetting, with the same selection `sync` times
+  against (see below). One 12.7 MB script of 84,747 events became 31 KB and 349
+  lines. Use it when the songs and signs are not wanted; with `--in-place` it
+  cannot be undone.
 - `<IN>` is one file or a folder, and `[OUT]` is optional: without it each
   result is a `<name>.clean.ass` copy next to its input, so the original is
   never touched (`subx clean .`). `[OUT]` names a file or a folder (mirroring
@@ -217,11 +227,14 @@ wins. It is a plain energy measure, not a trained detector, so a loud music or
 effects onset counts like a voice, but it keeps working on dense, music-backed
 dialogue where an on/off speech detector calls nearly everything speech.
 
-Only dialogue cues take part: karaoke syllables (an Effect plus at most three
-characters of text), drawings, events over 20 s and styles with far less cue
-time than the main one (signs, opening and ending lyrics) are ignored while
-matching but still move with the rest. Time, not count: signs tracked frame by
-frame can be more numerous than the dialogue without adding up to much.
+Only dialogue cues take part. Ignored while matching, but still moved with the
+rest: karaoke syllables (an Effect plus at most three characters of text),
+drawings, events shorter than 250 ms (letter-sized effect fragments) or longer
+than 20 s, styles stacked more than 1.5 deep (opening and ending effects pile up
+romaji, kanji and translation lines 9 to 18 deep, where dialogue is about 1) and
+styles with far less cue time than the main one (signs, opening and ending
+lyrics). Time, not count: signs tracked frame by frame can be more numerous than
+the dialogue without adding up to much.
 
 The search covers ±`--max-shift` seconds (default 120) and moves every event by
 the same amount: there is no split or frame-rate correction, so a subtitle for

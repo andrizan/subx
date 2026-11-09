@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::Args;
 
-use crate::subs::{self, batch, clean};
+use crate::subs::{self, batch, clean, sync};
 
 /// `subx clean <IN> [OUT]` — clean ASS files (keep karaoke, drop junk).
 #[derive(Debug, Args)]
@@ -34,6 +34,11 @@ pub struct CleanArgs {
     #[arg(long)]
     pub in_place: bool,
 
+    /// Keep only the spoken dialogue: drop karaoke, songs, signs and other
+    /// typesetting (the same selection `sync` times against).
+    #[arg(long)]
+    pub dialogue_only: bool,
+
     /// Recurse into subfolders (needed for `extract` output with `subs/<lang>/`).
     #[arg(short, long)]
     pub recursive: bool,
@@ -42,6 +47,7 @@ pub struct CleanArgs {
 struct CleanReport {
     dialogs: usize,
     karaoke: usize,
+    duplicates: usize,
     in_bytes: u64,
     out_bytes: u64,
 }
@@ -60,18 +66,30 @@ fn clean_one(input: &Path, output: &Path, args: &CleanArgs) -> Result<CleanRepor
         .len();
     // Fully loaded before writing, so in-place runs are safe.
     let file = batch::load_any(input)?;
-    let (events, stats) = if args.keep_karaoke || args.drop_junk {
-        clean::clean_events(&file.events, &args.font, args.shift_ms)
+    let source: Vec<subs::Event> = if args.dialogue_only {
+        let mask = sync::dialogue_mask(&file.events);
+        file.events
+            .iter()
+            .zip(mask)
+            // Dialogue lines can still carry karaoke timing tags.
+            .filter(|(e, keep)| *keep && !clean::is_karaoke_vertical(&e.text))
+            .map(|(e, _)| e.clone())
+            .collect()
     } else {
-        let mut events = file.events.clone();
+        file.events
+    };
+    let (events, stats) = if args.keep_karaoke || args.drop_junk {
+        clean::clean_events(&source, &args.font, args.shift_ms)
+    } else {
+        let mut events = source.clone();
         if args.shift_ms != 0 {
             subs::shift::shift_events(&mut events, args.shift_ms);
         }
         (
             events,
             clean::CleanStats {
-                dialogs: file.events.len(),
-                karaoke: 0,
+                dialogs: source.len(),
+                ..Default::default()
             },
         )
     };
@@ -88,6 +106,7 @@ fn clean_one(input: &Path, output: &Path, args: &CleanArgs) -> Result<CleanRepor
     Ok(CleanReport {
         dialogs: stats.dialogs,
         karaoke: stats.karaoke,
+        duplicates: stats.duplicates,
         in_bytes,
         out_bytes,
     })
@@ -102,8 +121,13 @@ fn reduction(in_bytes: u64, out_bytes: u64) -> f64 {
 }
 
 fn print_report(name: &str, dest: Option<&Path>, r: &CleanReport) {
+    let duplicates = if r.duplicates > 0 {
+        format!(", duplicates dropped: {}", r.duplicates)
+    } else {
+        String::new()
+    };
     println!(
-        "[OK] {name} (dialogs: {}, karaoke: {}, size: {:.1}% smaller)",
+        "[OK] {name} (dialogs: {}, karaoke: {}{duplicates}, size: {:.1}% smaller)",
         r.dialogs,
         r.karaoke,
         reduction(r.in_bytes, r.out_bytes)
@@ -160,6 +184,7 @@ pub async fn run(args: CleanArgs) -> Result<()> {
     let mut failed = 0;
     let mut dialogs_total = 0;
     let mut karaoke_total = 0;
+    let mut duplicates_total = 0;
     for f in &files {
         let dest = destination(&args, f, Some(f.strip_prefix(&args.input).unwrap_or(f)));
         match clean_one(f, &dest, &args) {
@@ -167,6 +192,7 @@ pub async fn run(args: CleanArgs) -> Result<()> {
                 ok += 1;
                 dialogs_total += r.dialogs;
                 karaoke_total += r.karaoke;
+                duplicates_total += r.duplicates;
                 let copied = (!args.in_place).then_some(dest.as_path());
                 print_report(&f.to_string_lossy(), copied, &r);
             }
@@ -182,6 +208,7 @@ pub async fn run(args: CleanArgs) -> Result<()> {
     println!("Failed           : {failed}");
     println!("Dialogs kept     : {dialogs_total}");
     println!("Karaoke preserved: {karaoke_total}");
+    println!("Duplicates dropped: {duplicates_total}");
     if ok == 0 {
         anyhow::bail!("All files failed.");
     }
@@ -201,6 +228,7 @@ mod tests {
             font: "Arial".to_string(),
             shift_ms: 0,
             in_place: false,
+            dialogue_only: false,
             recursive: false,
         }
     }
@@ -245,6 +273,59 @@ mod tests {
         in_place.in_place = true;
         run(in_place).await.unwrap();
         assert_ne!(std::fs::read(&file).unwrap(), before, "cleaned in place");
+    }
+
+    /// A script shaped like a typeset release: dialogue, an opening lyric, karaoke
+    /// syllables carrying an Effect, a karaoke-timed line and a sign.
+    fn typeset_script() -> String {
+        let mut text = String::from(
+            "[Script Info]\nScriptType: v4.00+\n\n[V4+ Styles]\n\
+             Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, \
+             BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, \
+             BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n\
+             Style: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,2,2,10,10,10,1\n\n\
+             [Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n",
+        );
+        for i in 0..10 {
+            text += &format!(
+                "Dialogue: 0,0:00:{:02}.00,0:00:{:02}.00,Default,,0,0,0,,Spoken line {i}\n",
+                i * 3,
+                i * 3 + 2
+            );
+        }
+        text += "Dialogue: 0,0:01:00.00,0:01:02.00,OP,,0,0,0,,Opening lyric translated\n";
+        text += "Dialogue: 0,0:01:00.00,0:01:00.80,OP,,0,0,0,fx,ta\n";
+        text += "Dialogue: 0,0:00:20.00,0:00:22.00,Default,,0,0,0,,{\\k20}ka{\\k20}ra{\\k20}oke\n";
+        text += "Dialogue: 0,0:00:25.00,0:00:27.00,Sign,,0,0,0,,{\\pos(10,10)}Shop sign\n";
+        text
+    }
+
+    #[tokio::test]
+    async fn dialogue_only_keeps_the_spoken_lines_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("Ep01.ass");
+        std::fs::write(&file, typeset_script()).unwrap();
+
+        // Without the flag everything survives cleaning, songs and signs included.
+        run(args(&file)).await.unwrap();
+        let all = std::fs::read_to_string(dir.path().join("Ep01.clean.ass")).unwrap();
+        assert!(all.contains("Opening lyric") && all.contains("Shop sign"));
+
+        let mut only = args(&file);
+        only.dialogue_only = true;
+        only.in_place = true;
+        run(only).await.unwrap();
+        let kept = std::fs::read_to_string(&file).unwrap();
+        for i in 0..10 {
+            assert!(kept.contains(&format!("Spoken line {i}")), "line {i} lost");
+        }
+        for gone in ["Opening lyric", "Shop sign", ",ta", "k20"] {
+            assert!(
+                !kept.contains(gone),
+                "{gone:?} should have been dropped:\n{kept}"
+            );
+        }
+        assert_eq!(kept.matches("\nDialogue:").count(), 10);
     }
 
     #[tokio::test]

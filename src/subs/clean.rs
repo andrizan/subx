@@ -1,4 +1,5 @@
 use regex::Regex;
+use std::collections::HashSet;
 use std::sync::LazyLock;
 
 use super::{Event, shift::shift_events};
@@ -82,14 +83,20 @@ pub fn default_header(font: &str) -> Vec<String> {
 pub struct CleanStats {
     pub dialogs: usize,
     pub karaoke: usize,
+    /// Events dropped because an identical one (same time, layer, text and
+    /// position) was already kept.
+    pub duplicates: usize,
 }
 
 /// Clean ASS events: keep vertical karaoke verbatim (style `Karaoke`),
-/// scrub normal dialogues (style `Default`), optionally shift timings.
+/// scrub normal dialogues (style `Default`), optionally shift timings, and drop
+/// exact duplicates. Per-letter and per-frame effects differ only in their
+/// override tags, so stripping the tags leaves hundreds of identical lines.
 /// (`font` is unused here; the caller builds the header via `default_header`.)
 pub fn clean_events(events: &[Event], _font: &str, shift_ms: i32) -> (Vec<Event>, CleanStats) {
     let mut out = Vec::new();
     let mut stats = CleanStats::default();
+    let mut seen = HashSet::new();
     for e in events {
         let mut kept = e.clone();
         if shift_ms != 0 {
@@ -108,6 +115,18 @@ pub fn clean_events(events: &[Event], _font: &str, shift_ms: i32) -> (Vec<Event>
             }
         }
         kept.effect.clear();
+        let key = (
+            kept.start_ms,
+            kept.end_ms,
+            kept.layer,
+            kept.style.clone(),
+            kept.text.clone(),
+            kept.margins.clone(),
+        );
+        if !seen.insert(key) {
+            stats.duplicates += 1;
+            continue;
+        }
         out.push(kept);
         stats.dialogs += 1;
     }
@@ -161,6 +180,48 @@ mod tests {
         let text = super::super::ass::serialize(&out);
         let expected = std::fs::read_to_string(dir.join("clean.ass")).unwrap();
         assert_eq!(normalize(&text), normalize(&expected));
+    }
+
+    fn event(start: i64, end: i64, layer: i32, text: &str) -> Event {
+        Event {
+            start_ms: start,
+            end_ms: end,
+            layer,
+            text: text.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn identical_effect_frames_collapse_into_one_line() {
+        // Per-letter effect frames: only the override tags differ.
+        let events = vec![
+            event(70_980, 71_130, 3, "{\\fscx100}a"),
+            event(70_980, 71_130, 3, "{\\fscx110}a"),
+            event(70_980, 71_130, 3, "{\\fscx120\\blur2}a"),
+            event(70_980, 71_130, 3, "a"),
+        ];
+        let (kept, stats) = clean_events(&events, "Arial", 0);
+        assert_eq!(kept.len(), 1);
+        assert_eq!((stats.dialogs, stats.duplicates), (1, 3));
+    }
+
+    #[test]
+    fn only_lines_that_render_the_same_count_as_duplicates() {
+        let mut other_margin = event(1000, 2000, 1, "Hi");
+        other_margin.margins[2] = "40".to_string();
+        let events = vec![
+            event(1000, 2000, 1, "Hi"),
+            event(1000, 2000, 1, "Hi"),       // same everything
+            event(1000, 2000, 2, "Hi"),       // another layer
+            event(1000, 2100, 1, "Hi"),       // another end
+            event(1500, 2000, 1, "Hi"),       // another start
+            event(1000, 2000, 1, "Hi there"), // another text
+            other_margin,                     // another position
+        ];
+        let (kept, stats) = clean_events(&events, "Arial", 0);
+        assert_eq!(kept.len(), 6);
+        assert_eq!(stats.duplicates, 1);
     }
 
     fn normalize(s: &str) -> String {
