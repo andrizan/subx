@@ -5,13 +5,14 @@ use clap::Args;
 
 use crate::subs::{self, batch, clean};
 
-/// `subx clean <IN> <OUT>` — clean ASS files (keep karaoke, drop junk).
+/// `subx clean <IN> [OUT]` — clean ASS files (keep karaoke, drop junk).
 #[derive(Debug, Args)]
 pub struct CleanArgs {
     /// Input .ass file or folder.
     pub input: PathBuf,
-    /// Output .ass file or folder.
-    pub output: PathBuf,
+    /// Output .ass file or folder. Default: a `<name>.clean.ass` copy next to
+    /// each input; ignored with --in-place.
+    pub output: Option<PathBuf>,
 
     /// Keep vertical karaoke.
     #[arg(long, default_value_t = true)]
@@ -29,7 +30,7 @@ pub struct CleanArgs {
     #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
     pub shift_ms: i32,
 
-    /// Edit in place.
+    /// Overwrite the input instead of writing a `.clean` copy.
     #[arg(long)]
     pub in_place: bool,
 
@@ -100,55 +101,74 @@ fn reduction(in_bytes: u64, out_bytes: u64) -> f64 {
     }
 }
 
-fn print_report(name: &str, r: &CleanReport) {
+fn print_report(name: &str, dest: Option<&Path>, r: &CleanReport) {
     println!(
         "[OK] {name} (dialogs: {}, karaoke: {}, size: {:.1}% smaller)",
         r.dialogs,
         r.karaoke,
         reduction(r.in_bytes, r.out_bytes)
     );
+    if let Some(dest) = dest {
+        println!("     -> {}", dest.display());
+    }
+}
+
+/// Where the cleaned copy of `input` goes. `rel` is its path inside a folder
+/// INPUT (None for a single file).
+fn destination(args: &CleanArgs, input: &Path, rel: Option<&Path>) -> PathBuf {
+    if args.in_place {
+        return input.to_path_buf();
+    }
+    match (&args.output, rel) {
+        // Mirror the input structure so `subs/<lang>/` layouts survive.
+        (Some(out), Some(rel)) => out.join(rel),
+        (Some(out), None) => out.clone(),
+        (None, _) => batch::tagged_path(input, "clean"),
+    }
 }
 
 pub async fn run(args: CleanArgs) -> Result<()> {
     if args.input.is_file() {
-        let dest = if args.in_place {
-            args.input.clone()
-        } else {
-            args.output.clone()
-        };
+        let dest = destination(&args, &args.input, None);
         let r = clean_one(&args.input, &dest, &args)
             .with_context(|| format!("failed on {}", args.input.display()))?;
-        print_report(&args.input.to_string_lossy(), &r);
+        let copied = (!args.in_place).then_some(dest.as_path());
+        print_report(&args.input.to_string_lossy(), copied, &r);
         return Ok(());
     }
     if !args.input.is_dir() {
         anyhow::bail!("Input not found: {}", args.input.display());
     }
-    let files = batch::collect_subs(
+    // `.clean` copies from an earlier run are not input.
+    let files: Vec<PathBuf> = batch::collect_subs(
         &args.input,
         &["ass".to_string(), "ssa".to_string()],
         args.recursive,
-    )?;
+    )?
+    .into_iter()
+    .filter(|f| !batch::is_tagged(f, "clean"))
+    .collect();
     if files.is_empty() {
-        anyhow::bail!("No .ass files found in {}", args.input.display());
+        let hint = if args.recursive {
+            ""
+        } else {
+            " (use -r to look in subfolders)"
+        };
+        anyhow::bail!("No .ass files found in {}{hint}", args.input.display());
     }
     let mut ok = 0;
     let mut failed = 0;
     let mut dialogs_total = 0;
     let mut karaoke_total = 0;
     for f in &files {
-        // Mirror the input structure so `subs/<lang>/` layouts survive.
-        let dest = if args.in_place {
-            f.clone()
-        } else {
-            args.output.join(f.strip_prefix(&args.input).unwrap_or(f))
-        };
+        let dest = destination(&args, f, Some(f.strip_prefix(&args.input).unwrap_or(f)));
         match clean_one(f, &dest, &args) {
             Ok(r) => {
                 ok += 1;
                 dialogs_total += r.dialogs;
                 karaoke_total += r.karaoke;
-                print_report(&f.to_string_lossy(), &r);
+                let copied = (!args.in_place).then_some(dest.as_path());
+                print_report(&f.to_string_lossy(), copied, &r);
             }
             Err(e) => {
                 failed += 1;
@@ -166,4 +186,80 @@ pub async fn run(args: CleanArgs) -> Result<()> {
         anyhow::bail!("All files failed.");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(input: &Path) -> CleanArgs {
+        CleanArgs {
+            input: input.to_path_buf(),
+            output: None,
+            keep_karaoke: true,
+            drop_junk: true,
+            font: "Arial".to_string(),
+            shift_ms: 0,
+            in_place: false,
+            recursive: false,
+        }
+    }
+
+    /// A messy ASS from the repo fixtures, copied to `dir/name`.
+    fn fixture(dir: &Path, name: &str) -> PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let dest = dir.join(name);
+        let src = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/dirty.ass");
+        std::fs::copy(src, &dest).unwrap();
+        dest
+    }
+
+    #[tokio::test]
+    async fn a_folder_is_cleaned_into_copies_beside_the_originals() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = fixture(dir.path(), "Ep01.ass");
+        fixture(dir.path(), "Ep02.ass");
+        let before = std::fs::read(&first).unwrap();
+
+        run(args(dir.path())).await.unwrap();
+        assert!(dir.path().join("Ep01.clean.ass").is_file());
+        assert!(dir.path().join("Ep02.clean.ass").is_file());
+        assert_eq!(std::fs::read(&first).unwrap(), before, "original untouched");
+
+        // A second run does not read its own copies back.
+        run(args(dir.path())).await.unwrap();
+        assert!(!dir.path().join("Ep01.clean.clean.ass").exists());
+    }
+
+    #[tokio::test]
+    async fn a_single_file_defaults_to_a_copy_and_in_place_overwrites() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = fixture(dir.path(), "Ep01.ass");
+        let before = std::fs::read(&file).unwrap();
+
+        run(args(&file)).await.unwrap();
+        assert!(dir.path().join("Ep01.clean.ass").is_file());
+        assert_eq!(std::fs::read(&file).unwrap(), before);
+
+        let mut in_place = args(&file);
+        in_place.in_place = true;
+        run(in_place).await.unwrap();
+        assert_ne!(std::fs::read(&file).unwrap(), before, "cleaned in place");
+    }
+
+    #[tokio::test]
+    async fn subfolders_need_r_and_an_output_folder_mirrors_them() {
+        let dir = tempfile::tempdir().unwrap();
+        fixture(&dir.path().join("en"), "Ep01.en.ass");
+
+        let err = run(args(dir.path())).await.unwrap_err().to_string();
+        assert!(err.contains("-r"), "{err}");
+
+        let out = dir.path().join("out");
+        let mut recursive = args(dir.path());
+        recursive.recursive = true;
+        recursive.output = Some(out.clone());
+        run(recursive).await.unwrap();
+        assert!(out.join("en").join("Ep01.en.ass").is_file());
+    }
 }

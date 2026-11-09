@@ -130,25 +130,33 @@ works as a pre-mux check.
 ### `clean` — scrub ASS, keep karaoke
 
 ```
-subx clean <IN> <OUT> [--keep-karaoke] [--drop-junk] [--font Arial]
+subx clean <IN> [OUT] [--keep-karaoke] [--drop-junk] [--font Arial]
              [--shift-ms 0] [--in-place] [-r]
 ```
 
 - Keeps vertical karaoke verbatim (style `Karaoke`), strips visual tags,
   drawings, junk credits and empty lines from normal dialogue (style `Default`),
   and rebuilds the header in one font. `-r` recurses (needed after `extract`).
-- `--shift-ms` retimes in the same pass; `--in-place` rewrites the input.
+- `--shift-ms` retimes in the same pass.
+- `<IN>` is one file or a folder, and `[OUT]` is optional: without it each
+  result is a `<name>.clean.ass` copy next to its input, so the original is
+  never touched (`subx clean .`). `[OUT]` names a file or a folder (mirroring
+  the input layout), and `--in-place` overwrites the input and ignores `[OUT]`.
+  `.clean` copies from an earlier run are skipped by folder runs. A folder with
+  no `.ass` directly inside it says so and points at `-r`.
 
 ### `shift` — retime + drop empties
 
 ```
-subx shift <IN> <OUT> --shift-ms -1500 [--no-clean] [--keep-tag-only]
-             [-r] [--ext .srt,.ass,.ssa,.vtt]
+subx shift <IN> [OUT] --shift-ms -1500 [--no-clean] [--keep-tag-only]
+             [--in-place] [-r] [--ext .srt,.ass,.ssa,.vtt]
 ```
 
 Positive delays, negative advances (clamped at zero). By default, events
 without visible text are deleted (tag-only events too, unless `--keep-tag-only`
-or `--no-clean`). Folder runs mirror the input structure and are in-place safe.
+or `--no-clean`). Like `clean`, `[OUT]` is optional: without it each result is a
+`<name>.shifted.<ext>` copy next to its input, `--in-place` overwrites the
+input, and folder runs mirror the input structure under a named `[OUT]`.
 
 ### `sync` — retime automatically
 

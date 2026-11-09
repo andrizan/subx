@@ -67,10 +67,60 @@ pub fn collect_subs(dir: &Path, exts: &[String], recursive: bool) -> Result<Vec<
     Ok(files)
 }
 
+/// `Ep01.en.ass` -> `Ep01.en.clean.ass` in the same folder: where a command
+/// puts its copy when no output was named, so the original is never touched.
+pub fn tagged_path(input: &Path, tag: &str) -> PathBuf {
+    let stem = input
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let name = match input.extension() {
+        Some(ext) => format!("{stem}.{tag}.{}", ext.to_string_lossy()),
+        None => format!("{stem}.{tag}"),
+    };
+    input.with_file_name(name)
+}
+
+/// True for a copy `tagged_path` made, so folder runs never read it back.
+pub fn is_tagged(path: &Path, tag: &str) -> bool {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .is_some_and(|s| s.ends_with(&format!(".{tag}")))
+}
+
 /// Split `--ext ".srt,.ass"` into normalized extensions (no dots, lowercase).
 pub fn parse_ext_list(raw: &str) -> Vec<String> {
     raw.split(',')
         .map(|e| e.trim().trim_start_matches('.').to_lowercase())
         .filter(|e| !e.is_empty())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tagged_copies_sit_beside_the_input() {
+        assert_eq!(
+            tagged_path(Path::new("subs/Ep01.en.ass"), "clean"),
+            PathBuf::from("subs/Ep01.en.clean.ass")
+        );
+        assert_eq!(
+            tagged_path(Path::new("Ep01.srt"), "shifted"),
+            PathBuf::from("Ep01.shifted.srt")
+        );
+        assert_eq!(
+            tagged_path(Path::new("noext"), "x"),
+            PathBuf::from("noext.x")
+        );
+    }
+
+    #[test]
+    fn tagged_copies_are_recognised_but_other_names_are_not() {
+        assert!(is_tagged(Path::new("Ep01.en.clean.ass"), "clean"));
+        assert!(!is_tagged(Path::new("Ep01.en.ass"), "clean"));
+        assert!(!is_tagged(Path::new("clean.ass"), "clean"));
+        assert!(!is_tagged(Path::new("Ep01.clean.ass"), "shifted"));
+    }
 }
