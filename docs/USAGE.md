@@ -137,22 +137,27 @@ subx clean <IN> [OUT] [--keep-karaoke] [--drop-junk] [--font Arial]
 - Keeps vertical karaoke verbatim (style `Karaoke`), strips visual tags,
   drawings, junk credits and empty lines from normal dialogue (style `Default`),
   and rebuilds the header in one font. `-r` recurses (needed after `extract`).
+- Typesetting is left out: every line ends up in one style at the bottom of the
+  screen, so per-letter opening and ending effects, signs drawn frame by frame
+  and stacked romaji layers would pile up over the dialogue. Only the spoken
+  lines (the same selection as `--dialogue-only`) and the karaoke stay: a script
+  of 13,000 events came out as its 372 spoken lines.
 - `--shift-ms` retimes in the same pass.
-- Identical lines are collapsed. Per-letter and per-frame effects differ only in
-  their override tags, so stripping the tags leaves hundreds of identical
-  events; only the first (same time, layer, text and position) is kept. The
-  report counts them as `duplicates dropped`: a typeset script of 85,000 events
-  lost 71,000 this way.
+- Identical lines are collapsed (same time, layer, text and position; the
+  report counts them as `duplicates dropped`).
 - `--dialogue-only` keeps just the spoken lines, exactly as written. Each line
   keeps its own style and tags (italic thoughts, narration, top-positioned
   text), and the styles in use are carried over into the new header with their
   font replaced by `--font`; the original play resolution stays. Dropped:
-  karaoke, letter-sized effect fragments, typesetting stacked several layers
+  karaoke, letter-sized effect fragments, typesetting stacked several lines
   deep, junk lines and duplicates. It is more lenient than the selection `sync`
   times against (see below): a small style (narration, flashback, signs) or a
-  song translation is kept rather than risk a lost line. One 12.7 MB script of
-  84,747 events became 41 KB and 359 lines. With `--in-place` it cannot be
-  undone.
+  song translation is kept rather than risk a lost line. Titles stay too: a
+  line drawn in several layers (a title card with its glow and gradient strips)
+  counts once, and a style is stacked only beyond four different lines at once,
+  so a "next episode" card or a title with its subtitle is kept. One 12.7 MB
+  script of 84,747 events became 41 KB and 359 lines. With `--in-place` it
+  cannot be undone.
 - `<IN>` is one file or a folder, and `[OUT]` is optional: without it each
   result is a `<name>.clean.ass` copy next to its input, so the original is
   never touched (`subx clean .`). `[OUT]` names a file or a folder (mirroring

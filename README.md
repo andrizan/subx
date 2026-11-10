@@ -4,7 +4,7 @@ All-in-one fansub toolkit in a single Rust binary: extract subtitles/audio from
 video, clean and retime them, translate via LibreTranslate or any
 OpenAI-compatible AI model, QC the result, and mux it back.
 
-Status: **complete** — 157 unit + 13 end-to-end tests, `clippy --all-targets -D warnings` clean.
+Status: **complete** — 160 unit + 13 end-to-end tests, `clippy --all-targets -D warnings` clean.
 
 ## Requirements
 
@@ -38,7 +38,7 @@ Shortcuts: `make build-release`, `make check`, `make run ARGS="..."`.
 |---|---|
 | `extract` | Subtitles (+ optional `--audio`, `--fonts`, `--chapters`) out of MKV/MP4, one file or a folder, into `subs/`, `audio/`, `fonts/`, `chapters/` |
 | `fonts` | Which fonts the ASS scripts need, and whether each is attached, installed or missing |
-| `clean` | Scrub ASS junk, keep karaoke, normalize the font (`-r` for `subs/<lang>/`); no output named = a `.clean` copy beside each file, `--in-place` overwrites; identical effect lines are collapsed, `--dialogue-only` keeps just the spoken lines |
+| `clean` | Scrub ASS junk, keep karaoke, normalize the font (`-r` for `subs/<lang>/`); no output named = a `.clean` copy beside each file, `--in-place` overwrites; typesetting (per-letter effects, stacked layers) is left out, `--dialogue-only` also drops karaoke and keeps each line's own style |
 | `shift` | Shift timestamps ±ms, drop empty events (file or folder; `.shifted` copies, or `--in-place`) |
 | `sync` | Retime automatically: the subtitles inside an `.mkv`, or an external subtitle given with its video; the offset is measured from the speech and low-confidence guesses are refused; a folder fixes what is off and skips what is right (`--dry-run`, `--in-place`, `-o`) |
 | `filter` | Delete lines matching keywords (regex, dry-run supported) |

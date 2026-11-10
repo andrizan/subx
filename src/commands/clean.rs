@@ -70,7 +70,11 @@ fn clean_one(input: &Path, output: &Path, args: &CleanArgs) -> Result<CleanRepor
         dialogue_only(&file, args)
     } else {
         let (events, stats) = if args.keep_karaoke || args.drop_junk {
-            clean::clean_events(&file.events, &args.font, args.shift_ms)
+            clean::clean_events(
+                &without_typesetting(&file.events),
+                &args.font,
+                args.shift_ms,
+            )
         } else {
             let mut events = file.events.clone();
             if args.shift_ms != 0 {
@@ -103,6 +107,21 @@ fn clean_one(input: &Path, output: &Path, args: &CleanArgs) -> Result<CleanRepor
         in_bytes,
         out_bytes,
     })
+}
+
+/// Plain `clean` puts every line in one style at the bottom of the screen, so the
+/// typesetting of a release (per-letter opening and ending effects, signs drawn
+/// frame by frame, stacked romaji layers) would pile up over the dialogue: a
+/// script can hold ten thousand such fragments next to three hundred spoken
+/// lines. Keep what is spoken and the karaoke; the rest only works with the
+/// styles and positions it came with.
+fn without_typesetting(events: &[subs::Event]) -> Vec<subs::Event> {
+    sync::spoken_mask(events)
+        .into_iter()
+        .zip(events)
+        .filter(|(spoken, e)| *spoken || clean::is_karaoke_vertical(&e.text))
+        .map(|(_, e)| e.clone())
+        .collect()
 }
 
 /// `--dialogue-only`: the spoken lines exactly as written. Their styles (italics,
@@ -360,6 +379,40 @@ mod tests {
             );
         }
         text
+    }
+
+    #[tokio::test]
+    async fn plain_clean_leaves_the_typesetting_out_but_keeps_karaoke() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("Ep01.ass");
+        std::fs::write(&file, typeset_script()).unwrap();
+
+        run(args(&file)).await.unwrap();
+        let out = std::fs::read_to_string(dir.path().join("Ep01.clean.ass")).unwrap();
+
+        // Everything spoken is there, flattened into the default style.
+        for i in 0..10 {
+            assert!(out.contains(&format!("Spoken line {i}")), "line {i} lost");
+        }
+        for kept in [
+            "Thinking hard",
+            "Long ago the gates opened",
+            "Opening lyric",
+        ] {
+            assert!(out.contains(kept), "{kept:?} lost:\n{out}");
+        }
+        // The karaoke line stays verbatim in its own style.
+        assert!(
+            out.contains(",Karaoke,,0,0,0,,{\\k20}ka{\\k20}ra{\\k20}oke"),
+            "{out}"
+        );
+
+        // Effect fragments and stacked layers would only litter the screen.
+        for gone in [",ta", ",wa", "romaji layer"] {
+            assert!(!out.contains(gone), "{gone:?} should be gone:\n{out}");
+        }
+        // Ten lines (the duplicate collapsed), thought, narration, song line, karaoke.
+        assert_eq!(out.matches("\nDialogue:").count(), 14, "{out}");
     }
 
     #[tokio::test]

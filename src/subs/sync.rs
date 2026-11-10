@@ -10,7 +10,7 @@
 //! a real 24-minute comedy episode the onset score stood 24 standard
 //! deviations over chance where the level score reached 5.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{Result, bail};
 
@@ -24,6 +24,11 @@ const MAX_CUE_MS: i64 = 20_000;
 
 /// Styles whose events stack deeper than this are typesetting, not dialogue.
 const MAX_STACK_DEPTH: f64 = 1.5;
+
+/// The lenient selection ([`spoken_mask`]) calls a style stacked only beyond
+/// this many different lines at once: a title with its subtitle, or three
+/// captions on screen together, are signs that must survive, not typesetting.
+const MAX_LENIENT_STACK_DEPTH: f64 = 4.0;
 
 /// Events shorter than this are effect fragments (a letter or syllable of a
 /// karaoke effect lasts about 150 ms), not a line anyone could read.
@@ -125,11 +130,16 @@ pub fn dialogue_mask(events: &[Event]) -> Vec<bool> {
 /// small ones included (narration, flashbacks, signs, song translations). For
 /// callers that must not lose a spoken line; the price is a few more non-dialogue
 /// lines than the strict selection that timing needs.
+///
+/// Stacking is also judged more gently, so that titles and signs survive: the
+/// same line drawn in several layers (outline, glow, gradient strips) counts
+/// once, and a style is stacked only beyond four different lines at once.
 pub fn spoken_mask(events: &[Event]) -> Vec<bool> {
     select(events, false)
 }
 
-/// `drop_minor` also drops styles with far less cue time than the main one.
+/// `drop_minor` also drops styles with far less cue time than the main one, and
+/// judges stacking by the strict rules instead of the lenient ones.
 fn select(events: &[Event], drop_minor: bool) -> Vec<bool> {
     let spoken: Vec<bool> = events
         .iter()
@@ -141,7 +151,14 @@ fn select(events: &[Event], drop_minor: bool) -> Vec<bool> {
         .collect();
 
     let mut spans: HashMap<&str, Vec<(i64, i64)>> = HashMap::new();
+    let mut drawn = HashSet::new();
     for (e, _) in events.iter().zip(&spoken).filter(|(_, s)| **s) {
+        // One line in many layers is not a pile-up of lines.
+        if !drop_minor
+            && !drawn.insert((e.style.as_str(), e.start_ms, e.end_ms, plaintext(&e.text)))
+        {
+            continue;
+        }
         spans
             .entry(e.style.as_str())
             .or_default()
@@ -162,9 +179,14 @@ fn select(events: &[Event], drop_minor: bool) -> Vec<bool> {
             (style, (total, covered))
         })
         .collect();
+    let max_depth = if drop_minor {
+        MAX_STACK_DEPTH
+    } else {
+        MAX_LENIENT_STACK_DEPTH
+    };
     let stacked = |style: &str| {
         let (total, covered) = totals[style];
-        total as f64 > MAX_STACK_DEPTH * covered as f64
+        total as f64 > max_depth * covered as f64
     };
     // Dense styles are typesetting, unless that would leave nothing.
     let drop_dense = totals.keys().any(|s| !stacked(s));
@@ -557,6 +579,44 @@ mod tests {
             !mask[20] && !mask[28],
             "stacked layers and the fragment are out"
         );
+    }
+
+    #[test]
+    fn a_title_drawn_in_many_layers_is_not_a_stack() {
+        // 100 lines of dialogue and three title cards, each the same words drawn
+        // in 20 layers (outline, glow, gradient strips with their own clip).
+        let mut events: Vec<Event> = (0..100)
+            .map(|i| ev(i * 5000, i * 5000 + 2000, "Default", "", "Line"))
+            .collect();
+        for card in 0..3 {
+            for layer in 0..20 {
+                let at = 600_000 + card * 10_000;
+                let text = format!("{{\\clip({layer},0,9,9)\\blur{layer}}}Chapter title");
+                events.push(ev(at, at + 4000, "Sign", "", &text));
+            }
+        }
+        let count = |mask: Vec<bool>| mask.into_iter().filter(|k| *k).count();
+        // Cleaning keeps every layer, so the card still looks as it was typeset.
+        assert_eq!(count(spoken_mask(&events)), 160);
+        // Timing still sees 20 deep layers and a minor style, and leaves them out.
+        assert_eq!(count(dialogue_mask(&events)), 100);
+    }
+
+    #[test]
+    fn a_few_signs_shown_together_are_not_a_stack() {
+        // A "Next time" card (kicker and episode title at once) and a credit with
+        // three captions, each in a style of its own, next to 100 spoken lines.
+        let mut events: Vec<Event> = (0..100)
+            .map(|i| ev(i * 5000, i * 5000 + 2000, "Default", "", "Line"))
+            .collect();
+        events.push(ev(600_000, 605_000, "NextTime", "", "Next time"));
+        events.push(ev(600_000, 605_000, "NextTime", "", "A long way home"));
+        for caption in ["This is me", "Alphonse", "Illustration by someone"] {
+            events.push(ev(700_000, 705_000, "Credit", "", caption));
+        }
+        let count = |mask: Vec<bool>| mask.into_iter().filter(|k| *k).count();
+        assert_eq!(count(spoken_mask(&events)), 105);
+        assert_eq!(count(dialogue_mask(&events)), 100);
     }
 
     #[test]
