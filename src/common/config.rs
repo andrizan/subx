@@ -70,6 +70,9 @@ pub struct EncodeConfig {
     pub audio_lang: String,
     /// Subtitle language when the file name has no `.<lang>.` part.
     pub sub_lang: String,
+    /// Language (ISO 639-2) of the text subtitle inside the video that is used
+    /// when the folder has no external subtitle for an episode.
+    pub embedded_sub_lang: String,
     /// Folder for per-episode work copies (default: `<temp>/subx-encode`).
     pub work_dir: Option<PathBuf>,
 }
@@ -175,6 +178,7 @@ impl Default for EncodeConfig {
             resolution: String::new(),
             audio_lang: "jpn".to_string(),
             sub_lang: "id".to_string(),
+            embedded_sub_lang: "ind".to_string(),
             work_dir: None,
         }
     }
@@ -264,6 +268,7 @@ mod tests {
         assert!(cfg.encode.template.is_none());
         assert_eq!(cfg.encode.audio_lang, "jpn");
         assert_eq!(cfg.encode.sub_lang, "id");
+        assert_eq!(cfg.encode.embedded_sub_lang, "ind");
         assert!(cfg.encode.prefix.is_empty() && cfg.encode.tag.is_empty());
         assert_eq!(cfg.encode.engine, "native");
         assert_eq!(cfg.encode.jobs, 1);

@@ -331,7 +331,8 @@ Reports per file: event count, min/max durations, average/max reading speed
 ```
 subx encode <SOURCE> <DEST> [--engine native|staxrip] [--only 10-13]
               [--prefix "[GROUP]"] [--series S] [--tag "BD 480p AV1.Opus"]
-              [--sub-lang id] [--audio-lang jpn] [--work-dir DIR] [--dry-run]
+              [--sub-lang id] [--embedded-sub-lang ind] [--audio-lang jpn]
+              [--work-dir DIR] [--dry-run] [--allow-no-subs] [--replace-subs]
     staxrip:  [--template NAME] [--resolution 848x480] [--staxrip-dir DIR]
               [--timeout-min 120] [--allow-running]
     native:   [--profile NAME] [-j N] [--stall-min 5]
@@ -348,10 +349,14 @@ except `--only`, `--series`, `--timeout-min` and the switches defaults to the
 `[encode]` section of `subx.toml` / `subx.local.toml` (`--staxrip-dir` to
 `[tools] staxrip_dir`), so a configured machine runs with just
 `subx encode <SOURCE> <DEST>`. The template and the StaxRip folder must be
-given one way or the other. For every video in `<SOURCE>`:
+given one way or the other. `<SOURCE>` is a folder, or one video (its
+subtitles are then looked up in the video's folder). For every video:
 
 1. Makes a work copy with mkvmerge: no embedded subtitles or fonts, only the
-   `--audio-lang` track (video, chapters and timing untouched).
+   `--audio-lang` track (video, chapters and timing untouched). A video whose
+   only audio track is in another language keeps it, with a warning and no
+   language check; an audio track with no language set is labelled
+   `--audio-lang`, because StaxRip leaves such audio out.
 2. Runs StaxRip through its command line: load `--template`, load the work copy,
    lock the target size, add the external `.ass/.ssa/.srt` files from `<SOURCE>`
    whose episode number matches (language from `<name>.id.ass`, first one default),
@@ -359,15 +364,34 @@ given one way or the other. For every video in `<SOURCE>`:
 3. Verifies the result with mkvmerge (size, one audio track in `--audio-lang`,
    subtitle count, no fonts); the work copy is deleted only when that passes.
 
-- Output name: `<prefix> <series> - <NN or OVA N> (<tag>).mkv` in `<DEST>`;
-  `--series` defaults to the source folder name. Episodes whose output already
-  exists are skipped (delete the file to redo one).
-- Episode numbers come from file names, in this priority: `S01E09`, `OVA 2`,
-  `SP 1`/`Special 1`, `Movie`, ` - 09`, `EP9`/`E09`, then the last standalone 1–3
-  digit number (so `480p`, `x265` and years never count); bracketed groups are
-  ignored and `v2` revisions still pair. Output names use `09`, `S01E09`,
-  `OVA 2`, `SP 1`, `Movie`. `--only` takes comma-separated episodes and ranges:
-  `--only 5,8-10,OVA 1-3,S2E1-3`.
+- Output name: `<prefix> <series> - <NN> (<tag>).mkv` in `<DEST>`, with
+  `S2 - 05` for an episode tagged with its season and `- OVA 01` / `- Movie 2`
+  for the others. `--series` defaults to the name of the **`<DEST>` folder**, not
+  of the source. Episodes whose output already exists are skipped (delete the
+  file to redo one).
+- Episode numbers come from file names, in this priority: `S01E09` (`S00E01` is
+  an OVA), `OVA 2`, `SP 1`/`Special 1`, `Movie`/`Film`/`Gekijouban`, a season tag
+  with the number after it (`Show S2 BD - 05`, season 2 and up), ` - 09`,
+  `EP9`/`E09`, then the last standalone 1–3 digit number (so `480p`, `x265` and
+  years never count); bracketed groups are ignored and `v2` revisions still pair.
+  `--only` takes comma-separated episodes and ranges: `--only 5,8-10,OVA 1-3,S2E1-3`.
+- A folder with several seasons (`S01E01` … `S02E01` …) pairs with subtitles
+  numbered straight through: season 2 continues after the last episode of season 1
+  (`S02E01` is 13 after twelve episodes), so a subtitle called `S2 ... 01` or
+  `... - 13` finds it. Untagged episodes next to a `S2` count as season 1. With a
+  single season the numbers stay as they are. `--only 13` and `--only S2E1` both
+  select it; the output is still named `S2 - 01`.
+- A release that calls itself an OVA without a number (`S1 - 14 (OVA)`,
+  `S2 OVA - 14`) is numbered `OVA 01`, `OVA 02`, … in name order, which is how
+  OVA subtitles are numbered.
+- An episode with no external subtitle uses the text subtitle inside the video
+  in `--embedded-sub-lang` (default `ind`; `--sub-lang` counts too), extracted
+  to the work folder; the track that is not forced comes first. Picture
+  subtitles (PGS, VobSub) cannot be used. The plan shows `subs=1 (embedded)`.
+- An episode with no subtitle at all (none in the folder, none inside the video)
+  is announced, and unless it is a `--dry-run` you are asked `[y/N]` before
+  anything is encoded; no answer (no terminal) is a no. `--allow-no-subs` skips
+  the question for unattended runs.
 - `--template` ignores case and punctuation (`Anime480p.AV1.Opus96` finds
   `Anime-480p.AV1.Opus96`). `--resolution` is passed to StaxRip because the
   template derives the height from the aspect ratio (848 → 476); an empty value
@@ -375,6 +399,24 @@ given one way or the other. For every video in `<SOURCE>`:
 - Refuses to start while StaxRip is running (`Jobs.dat`/`Settings.dat` are shared)
   unless `--allow-running`. `--dry-run` prints the plan and the StaxRip command
   lines without touching anything.
+
+#### Replacing subtitles without encoding again
+
+```
+subx encode <SOURCE> <DEST> --replace-subs [--dry-run]
+```
+
+Nothing is encoded. For every result that already exists in `<DEST>` and has
+external subtitles in `<SOURCE>`, the subtitle tracks are swapped for those files
+(mkvmerge remux, video and audio untouched, first subtitle default). Useful after
+a subtitle was fixed or arrived later. The new file is written beside the result
+as `<name>.mkv.subswap.tmp` and checked first: one video of the same size, one
+audio track in the same language, the same chapters, the right number of
+subtitles, no fonts. Only then does it overwrite the old result; if anything is
+off, or mkvmerge fails, the old file is not touched. A result that does not exist
+yet, or an episode with no external subtitle, is skipped. Works with either
+engine and needs only MKVToolNix. The plan shows what will happen
+(`REPLACE SUBS` or `SKIP (...)`).
 
 #### Native engine
 
@@ -529,6 +571,7 @@ so secrets and machine paths belong there.
 | `[encode] prefix` / `tag` | `""` | output name prefix and parenthesized tag |
 | `[encode] resolution` | `""` | `WIDTHxHEIGHT` locked in StaxRip; empty keeps the template's size |
 | `[encode] audio_lang` / `sub_lang` | `"jpn"` / `"id"` | audio track kept; subtitle language fallback |
+| `[encode] embedded_sub_lang` | `"ind"` | language of the text subtitle inside the video used when the folder has none |
 | `[encode] work_dir` | temp | folder for per-episode work copies |
 | `[encode] engine` | `"native"` | `native` or `staxrip` |
 | `[encode] profile` | — | default `[encode.profiles.*]` entry for the native engine |

@@ -14,7 +14,9 @@ use futures::StreamExt;
 use serde_json::Value;
 use tokio::io::AsyncReadExt;
 
-use super::{Episode, check_output, file_name, mkv_info, pick_audio_track, sub_language};
+use super::{
+    Episode, check_output, extract_embedded, file_name, mkv_info, pick_audio, sub_language,
+};
 use crate::common::config::{EncodeConfig, Profile};
 use crate::common::tools::{self, Tool};
 use crate::media::{mkv, probe};
@@ -141,8 +143,12 @@ impl Step {
 #[derive(Debug, Clone)]
 pub struct SourceInfo {
     pub audio_track: u64,
-    /// ISO 639-2 code mkvmerge reports for that track.
+    /// Language the muxed audio track gets: what mkvmerge reports for it, or the
+    /// wanted language when the track has none.
     pub audio_lang: String,
+    /// Language the finished file must report; `None` = the only audio track was
+    /// kept whatever its language, so it is not checked.
+    pub expected_audio_lang: Option<String>,
     /// Audio start offset the mux must keep (`--sync`).
     pub delay_ms: i64,
     pub width: u32,
@@ -538,17 +544,20 @@ impl Native {
     /// Read what the source needs us to know.
     pub async fn inspect(&self, video: &Path) -> Result<SourceInfo> {
         let report = mkv_info(&self.mkvmerge, video).await?;
-        let audio_track = pick_audio_track(&report, &self.audio_lang)
+        let pick = pick_audio(&report, &self.audio_lang)
             .with_context(|| format!("while reading {}", video.display()))?;
+        let audio_track = pick.id;
         let track = report["tracks"]
             .as_array()
             .and_then(|t| t.iter().find(|t| t["id"].as_u64() == Some(audio_track)))
             .cloned()
             .unwrap_or(Value::Null);
-        let audio_lang = track["properties"]["language"]
-            .as_str()
-            .unwrap_or(&self.audio_lang)
-            .to_string();
+        let audio_lang = pick.relabel.clone().unwrap_or_else(|| {
+            track["properties"]["language"]
+                .as_str()
+                .unwrap_or(&self.audio_lang)
+                .to_string()
+        });
         let delay_ms = track["properties"]["minimum_timestamp"]
             .as_i64()
             .map_or(0, |ns| (ns as f64 / 1_000_000.0).round() as i64);
@@ -580,6 +589,7 @@ impl Native {
         Ok(SourceInfo {
             audio_track,
             audio_lang,
+            expected_audio_lang: pick.expected,
             delay_ms,
             width,
             height,
@@ -1075,6 +1085,9 @@ pub async fn encode_one(n: &Native, ep: &Episode, work: &Path) -> Result<()> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("cannot create {}", parent.display()))?;
     }
+    // An embedded subtitle that stands in for external ones is a file in `work`.
+    extract_embedded(Some(&n.mkvextract), ep, work).await?;
+    let ep = &ep.with_subs_in(work);
     let log = work.join("encode.log");
     log_line(
         &log,
@@ -1122,7 +1135,12 @@ pub async fn encode_one(n: &Native, ep: &Episode, work: &Path) -> Result<()> {
         bail!("output file was not created");
     }
     let info = mkv_info(&n.mkvmerge, &ep.target).await?;
-    let mut problems = check_output(&info, ep.subs.len(), &n.audio_lang, &n.resolution());
+    let mut problems = check_output(
+        &info,
+        ep.subs.len(),
+        src.expected_audio_lang.as_deref(),
+        &n.resolution(),
+    );
     if let Some(ns) = info["container"]["properties"]["duration"].as_f64() {
         let got = ns / 1e9;
         if src.duration_s > 0.0 && (got - src.duration_s).abs() > 1.0 {
@@ -1151,6 +1169,7 @@ pub async fn dry_run(n: &Native, plan: &[Episode], work_root: &Path) -> Result<(
     println!("{}", n.describe());
     for ep in plan.iter().filter(|e| !e.target.exists()) {
         let work = work_root.join(ep.id.key());
+        let ep = &ep.with_subs_in(&work);
         let src = n.inspect(&ep.video).await?;
         println!(
             "\n[{}] audio track {} ({}, +{} ms), {}x{} @ {} fps, chapters: {}, crop: {}",
@@ -1445,6 +1464,7 @@ mod tests {
             id: EpisodeId::parse("09").unwrap(),
             video: PathBuf::from("S/Show - 09.mkv"),
             subs: vec![PathBuf::from("S/Show - 09.id.ass")],
+            embedded: None,
             target: PathBuf::from("D/Show - 09.mkv"),
         }
     }
@@ -1453,6 +1473,7 @@ mod tests {
         SourceInfo {
             audio_track: 2,
             audio_lang: "jpn".into(),
+            expected_audio_lang: Some("jpn".into()),
             delay_ms: 9,
             width: 1920,
             height: 1080,
